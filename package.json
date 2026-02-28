@@ -25,7 +25,7 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "typecheck": "tsc --noEmit",
-    "validate": "pnpm lint:check && pnpm typecheck && pnpm test --coverage && pnpm knip && pnpm build",
+    "validate": "pnpm lint:check && pnpm typecheck && pnpm test:cov && pnpm knip && pnpm audit --audit-level=moderate && pnpm build",
     "knip": "knip",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
@@ -87,7 +87,8 @@
     ],
     "overrides": {
       "serialize-javascript": "^7.0.0",
-      "ajv": "^8.18.0"
+      "ajv@>=8": "8.18.0",
+      "esbuild": ">=0.25.0"
     }
   },
   "jest": {
