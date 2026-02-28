@@ -32,7 +32,7 @@ jobs:
           key: eslint-${{ hashFiles('pnpm-lock.yaml', 'eslint.config.mjs') }}
           restore-keys: eslint-
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
+      - run: pnpm lint:check
       - run: pnpm format:check
 
   typecheck:
