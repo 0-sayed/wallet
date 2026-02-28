@@ -84,6 +84,7 @@ jobs:
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
       - run: pnpm test --coverage
+      - run: pnpm test:e2e
 
   build:
     name: Build
