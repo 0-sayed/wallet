@@ -83,7 +83,7 @@ jobs:
           node-version: '22'
           cache: 'pnpm'
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test --coverage
+      - run: pnpm test:cov
       - run: pnpm test:e2e
 
   build:
