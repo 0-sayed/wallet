@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: pnpm/action-setup@fe52bf83ad1c75d7c3f87ee83e9d1e83c92e09dc # v4.0.0
+        with:
+          version: 9
+      - uses: actions/setup-node@1d0ff469b3a80f47b768ef9d8544f804aa9c94c3 # v4.2.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - uses: actions/cache@d4323d4df104b026a6aa633fce163c9f1bce0fd7 # v4.2.0
+        with:
+          path: .eslintcache
+          key: eslint-${{ hashFiles('pnpm-lock.yaml', 'eslint.config.mjs') }}
+          restore-keys: eslint-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm format:check
+
+  typecheck:
+    name: Type Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: pnpm/action-setup@fe52bf83ad1c75d7c3f87ee83e9d1e83c92e09dc # v4.0.0
+        with:
+          version: 9
+      - uses: actions/setup-node@1d0ff469b3a80f47b768ef9d8544f804aa9c94c3 # v4.2.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wallet
+          POSTGRES_PASSWORD: wallet
+          POSTGRES_DB: wallet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://wallet:wallet@localhost:5432/wallet
+      REDIS_HOST: localhost
+      REDIS_PORT: 6379
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: pnpm/action-setup@fe52bf83ad1c75d7c3f87ee83e9d1e83c92e09dc # v4.0.0
+        with:
+          version: 9
+      - uses: actions/setup-node@1d0ff469b3a80f47b768ef9d8544f804aa9c94c3 # v4.2.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test --coverage
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [lint, typecheck, test]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: pnpm/action-setup@fe52bf83ad1c75d7c3f87ee83e9d1e83c92e09dc # v4.0.0
+        with:
+          version: 9
+      - uses: actions/setup-node@1d0ff469b3a80f47b768ef9d8544f804aa9c94c3 # v4.2.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
