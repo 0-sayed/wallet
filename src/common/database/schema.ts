@@ -50,7 +50,10 @@ export const wallets = pgTable(
       .references(() => users.id)
       .notNull(),
     balance: integer('balance').notNull().default(0),
-    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .defaultNow()
+      .notNull()
+      .$onUpdate(() => new Date()),
   },
   (table) => [
     uniqueIndex('wallets_user_id_idx').on(table.userId),
