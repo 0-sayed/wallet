@@ -84,7 +84,10 @@
       "esbuild",
       "msgpackr-extract",
       "unrs-resolver"
-    ]
+    ],
+    "overrides": {
+      "serialize-javascript": "^7.0.0"
+    }
   },
   "jest": {
     "moduleFileExtensions": [
