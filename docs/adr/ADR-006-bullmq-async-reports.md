@@ -17,8 +17,8 @@ Running report generation inline would hold the HTTP connection open for the dur
 
 BullMQ:
 
-- Jobs are persisted in Redis — survives server restarts
-- Worker runs in a separate process/thread — main NestJS thread is never blocked
+- Jobs stored in Redis; durability requires Redis persistence (AOF or RDB) configuration
+- For CPU-heavy jobs, use sandboxed processors (separate file) or enable Worker Threads to prevent blocking request handling
 - Built-in job status tracking (`queued`, `processing`, `completed`, `failed`)
 - First-class NestJS integration via `@nestjs/bullmq`
 

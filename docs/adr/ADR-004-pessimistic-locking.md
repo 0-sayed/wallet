@@ -19,7 +19,7 @@ Use pessimistic locking via `SELECT FOR UPDATE`.
 
 - Acquires a row-level lock at read time
 - Second concurrent request waits at the lock, not at the write
-- After the first commits, the second reads the updated balance and fails cleanly with 402
+- After the first commits, the second reads the updated balance and is re-evaluated; it may succeed or fail based on remaining funds
 - No retry logic. No version columns. The database serializes access.
 
 This is the correct mental model for financial transactions: when money is involved, serialize access and fail fast rather than optimistically hope for no conflict.
