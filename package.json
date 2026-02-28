@@ -86,7 +86,8 @@
       "unrs-resolver"
     ],
     "overrides": {
-      "serialize-javascript": "^7.0.0"
+      "serialize-javascript": "^7.0.0",
+      "ajv": "^8.18.0"
     }
   },
   "jest": {
