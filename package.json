@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "validate": "pnpm lint:check && pnpm typecheck && pnpm test:cov && pnpm knip && pnpm audit --audit-level=moderate && pnpm build",
     "knip": "knip",
+    "db:seed": "ts-node -r tsconfig-paths/register src/common/database/seed.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio"
@@ -107,7 +108,8 @@
       "!main.ts",
       "!**/*.spec.ts",
       "!**/*.module.ts",
-      "!**/database/schema.ts"
+      "!**/database/schema.ts",
+      "!**/database/seed.ts"
     ],
     "coverageDirectory": "../coverage",
     "coverageThreshold": {
