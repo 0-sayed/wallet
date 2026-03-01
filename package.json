@@ -108,8 +108,7 @@
       "!main.ts",
       "!**/*.spec.ts",
       "!**/*.module.ts",
-      "!**/database/schema.ts",
-      "!**/database/seed.ts"
+      "!**/database/schema.ts"
     ],
     "coverageDirectory": "../coverage",
     "coverageThreshold": {
