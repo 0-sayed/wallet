@@ -1,4 +1,3 @@
-// src/common/database/seed.ts
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as dotenv from 'dotenv';
@@ -6,28 +5,24 @@ import { users, wallets } from './schema';
 
 dotenv.config();
 
-// Preflight: fail fast if required env vars are missing
-const DATABASE_URL = process.env.DATABASE_URL;
-const PLATFORM_ID = process.env.PLATFORM_ACCOUNT_ID;
-const PLATFORM_WALLET_ID = process.env.PLATFORM_WALLET_ID;
-
-if (!DATABASE_URL || !PLATFORM_ID || !PLATFORM_WALLET_ID) {
-  console.error(
-    'Missing required environment variables: DATABASE_URL, PLATFORM_ACCOUNT_ID, and PLATFORM_WALLET_ID must be set.',
-  );
-  process.exit(1);
-}
-
-const databaseUrl: string = DATABASE_URL;
-const platformId: string = PLATFORM_ID;
-const platformWalletId: string = PLATFORM_WALLET_ID;
-
 const ALICE_ID = '00000000-0000-0000-0000-000000000010';
 const ALICE_WALLET_ID = '00000000-0000-0000-0000-000000000011';
 const BOB_ID = '00000000-0000-0000-0000-000000000020';
 const BOB_WALLET_ID = '00000000-0000-0000-0000-000000000021';
 
-async function seed() {
+export async function seed() {
+  const databaseUrl = process.env.DATABASE_URL;
+  const platformId = process.env.PLATFORM_ACCOUNT_ID;
+  const platformWalletId = process.env.PLATFORM_WALLET_ID;
+
+  if (!databaseUrl || !platformId || !platformWalletId) {
+    console.error(
+      'Missing required environment variables: DATABASE_URL, PLATFORM_ACCOUNT_ID, and PLATFORM_WALLET_ID must be set.',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   const client = postgres(databaseUrl);
   const db = drizzle({ client });
 
@@ -78,4 +73,6 @@ async function seed() {
   }
 }
 
-void seed();
+if (require.main === module) {
+  void seed();
+}
