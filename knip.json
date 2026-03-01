@@ -1,5 +1,9 @@
 {
-  "entry": ["src/main.ts", "test/**/*.e2e-spec.ts"],
+  "entry": [
+    "src/main.ts",
+    "test/**/*.e2e-spec.ts",
+    "src/common/database/db.module.ts"
+  ],
   "ignoreDependencies": [
     "@nestjs/bullmq",
     "bullmq",

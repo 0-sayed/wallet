@@ -27,6 +27,7 @@
     "typecheck": "tsc --noEmit",
     "validate": "pnpm lint:check && pnpm typecheck && pnpm test:cov && pnpm knip && pnpm audit --audit-level=moderate && pnpm build",
     "knip": "knip",
+    "db:seed": "ts-node -r tsconfig-paths/register src/common/database/seed.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio"
@@ -34,6 +35,7 @@
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.0.1",
+    "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
     "bullmq": "^5.70.1",
