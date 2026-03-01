@@ -1,7 +1,11 @@
 import { NextFunction, Request, Response } from 'express';
 import { CorrelationIdMiddleware } from './correlation-id.middleware';
 
-jest.mock('uuid', () => ({ v4: () => 'test-uuid-1234' }));
+// eslint-disable-next-line @typescript-eslint/no-unsafe-return
+jest.mock('crypto', () => ({
+  ...jest.requireActual('crypto'),
+  randomUUID: () => 'test-uuid-1234',
+}));
 
 describe('CorrelationIdMiddleware', () => {
   let middleware: CorrelationIdMiddleware;

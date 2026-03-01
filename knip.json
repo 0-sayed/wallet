@@ -4,7 +4,6 @@
     "@nestjs/bullmq",
     "bullmq",
     "@eslint/eslintrc",
-    "@types/uuid",
     "pino-pretty",
     "source-map-support",
     "ts-loader"

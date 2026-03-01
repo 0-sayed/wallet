@@ -166,12 +166,6 @@ describe('HealthController', () => {
 });
 ```
 
-**uuid v13 is ESM-only** — Jest runs in CJS mode. Any test file that imports code using `uuid` must mock it:
-
-```typescript
-jest.mock('uuid', () => ({ v4: () => 'test-uuid-1234' }));
-```
-
 ### E2e tests (`*.e2e-spec.ts` in `test/`)
 
 Follow `test/app.e2e-spec.ts`:
