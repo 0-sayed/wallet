@@ -34,23 +34,25 @@ async function seed() {
   try {
     console.log('Seeding...');
 
-    await db
-      .insert(users)
-      .values([
-        { id: platformId, name: 'Platform' },
-        { id: ALICE_ID, name: 'Alice (buyer)' },
-        { id: BOB_ID, name: 'Bob (author)' },
-      ])
-      .onConflictDoNothing();
+    await db.transaction(async (tx) => {
+      await tx
+        .insert(users)
+        .values([
+          { id: platformId, name: 'Platform' },
+          { id: ALICE_ID, name: 'Alice (buyer)' },
+          { id: BOB_ID, name: 'Bob (author)' },
+        ])
+        .onConflictDoNothing();
 
-    await db
-      .insert(wallets)
-      .values([
-        { id: platformWalletId, userId: platformId, balance: 0 },
-        { id: ALICE_WALLET_ID, userId: ALICE_ID, balance: 10000 },
-        { id: BOB_WALLET_ID, userId: BOB_ID, balance: 0 },
-      ])
-      .onConflictDoNothing();
+      await tx
+        .insert(wallets)
+        .values([
+          { id: platformWalletId, userId: platformId, balance: 0 },
+          { id: ALICE_WALLET_ID, userId: ALICE_ID, balance: 10000 },
+          { id: BOB_WALLET_ID, userId: BOB_ID, balance: 0 },
+        ])
+        .onConflictDoNothing();
+    });
 
     console.log('Seed complete.');
     console.log(
