@@ -4,8 +4,10 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { UserIdGuard } from '../common/guards/user-id.guard';
 import { DepositDto } from './dto/deposit.dto';
 import { WalletsService } from './wallets.service';
@@ -17,9 +19,10 @@ export class WalletsController {
 
   @Post(':walletId/deposit')
   deposit(
+    @Req() req: Request & { userId: string },
     @Param('walletId', ParseUUIDPipe) walletId: string,
     @Body() dto: DepositDto,
   ) {
-    return this.walletsService.deposit(walletId, dto.amount);
+    return this.walletsService.deposit(req.userId, walletId, dto.amount);
   }
 }

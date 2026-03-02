@@ -4,7 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import type { AppDatabase } from '../common/database/db.module';
 import { DB } from '../common/database/db.module';
 import * as schema from '../common/database/schema';
@@ -14,6 +14,7 @@ export class WalletsService {
   constructor(@Inject(DB) private db: AppDatabase) {}
 
   async deposit(
+    userId: string,
     walletId: string,
     amount: number,
   ): Promise<typeof schema.wallets.$inferSelect> {
@@ -26,7 +27,12 @@ export class WalletsService {
       const [wallet] = await tx
         .select()
         .from(schema.wallets)
-        .where(eq(schema.wallets.id, walletId))
+        .where(
+          and(
+            eq(schema.wallets.id, walletId),
+            eq(schema.wallets.userId, userId),
+          ),
+        )
         .for('update');
 
       if (!wallet) {
@@ -40,7 +46,12 @@ export class WalletsService {
           balance: sql`${schema.wallets.balance} + ${amount}`,
           updatedAt: new Date(),
         })
-        .where(eq(schema.wallets.id, walletId))
+        .where(
+          and(
+            eq(schema.wallets.id, walletId),
+            eq(schema.wallets.userId, userId),
+          ),
+        )
         .returning();
 
       await tx.insert(schema.ledger).values({
