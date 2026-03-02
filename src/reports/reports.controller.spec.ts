@@ -1,5 +1,6 @@
 // src/reports/reports.controller.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
+import { Request } from 'express';
 import { ReportsController } from './reports.controller';
 import { ReportsService } from './reports.service';
 
@@ -11,7 +12,9 @@ describe('ReportsController', () => {
     jobId: 'report-uuid-1',
     status: 'queued' as const,
   };
-  const mockRequest = { userId: 'user-uuid-1' };
+  const mockRequest = { userId: 'user-uuid-1' } as Request & {
+    userId: string;
+  };
 
   beforeEach(async () => {
     mockService = {

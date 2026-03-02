@@ -1,5 +1,11 @@
 // src/reports/reports.service.ts
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -18,6 +24,15 @@ export class ReportsService {
   ) {}
 
   async requestReport(requestedBy: string) {
+    const [user] = await this.db
+      .select({ id: schema.users.id })
+      .from(schema.users)
+      .where(eq(schema.users.id, requestedBy));
+
+    if (!user) {
+      throw new BadRequestException(`User ${requestedBy} does not exist`);
+    }
+
     const [report] = await this.db
       .insert(schema.reports)
       .values({ requestedBy })
@@ -33,12 +48,20 @@ export class ReportsService {
         (error as Error).stack,
       );
 
-      await this.db
-        .update(schema.reports)
-        .set({ status: 'failed' })
-        .where(eq(schema.reports.id, report.id));
+      try {
+        await this.db
+          .update(schema.reports)
+          .set({ status: 'failed' })
+          .where(eq(schema.reports.id, report.id));
 
-      return { jobId: report.id, status: 'failed' as const };
+        return { jobId: report.id, status: 'failed' as const };
+      } catch (dbError) {
+        this.logger.error(
+          `Failed to mark report ${report.id} as 'failed' in DB after queue failure.`,
+          (dbError as Error).stack,
+        );
+        throw error;
+      }
     }
 
     return { jobId: report.id, status: report.status };

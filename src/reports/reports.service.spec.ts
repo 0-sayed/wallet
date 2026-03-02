@@ -1,7 +1,7 @@
 // src/reports/reports.service.spec.ts
 import { Test, TestingModule } from '@nestjs/testing';
 import { getQueueToken } from '@nestjs/bullmq';
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ReportsService } from './reports.service';
 import { DB } from '../common/database/db.module';
 import { REPORTS_QUEUE } from './reports.processor';
@@ -49,6 +49,9 @@ describe('ReportsService', () => {
 
   describe('requestReport', () => {
     it('inserts a report row and enqueues a job', async () => {
+      // First where() → user-exists check, second where() → unused here
+      mockDb.where.mockResolvedValueOnce([{ id: 'user-uuid-1' }]);
+
       const result = await service.requestReport('user-uuid-1');
 
       expect(mockDb.insert).toHaveBeenCalled();
@@ -58,7 +61,18 @@ describe('ReportsService', () => {
       expect(result).toEqual({ jobId: mockReport.id, status: 'queued' });
     });
 
+    it('throws BadRequestException for unknown user', async () => {
+      mockDb.where.mockResolvedValueOnce([]);
+
+      await expect(service.requestReport('unknown-user')).rejects.toThrow(
+        BadRequestException,
+      );
+
+      expect(mockDb.insert).not.toHaveBeenCalled();
+    });
+
     it('marks report as failed when enqueue throws', async () => {
+      mockDb.where.mockResolvedValueOnce([{ id: 'user-uuid-1' }]);
       mockQueue.add.mockRejectedValue(new Error('Redis down'));
 
       const result = await service.requestReport('user-uuid-1');

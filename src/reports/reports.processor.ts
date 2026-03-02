@@ -40,10 +40,17 @@ export class ReportsProcessor extends WorkerHost {
     } catch (error) {
       this.logger.error(`Report ${reportId} failed`, (error as Error).stack);
 
-      await this.db
-        .update(schema.reports)
-        .set({ status: 'failed' })
-        .where(eq(schema.reports.id, reportId));
+      try {
+        await this.db
+          .update(schema.reports)
+          .set({ status: 'failed' })
+          .where(eq(schema.reports.id, reportId));
+      } catch (updateError) {
+        this.logger.error(
+          `Additionally, failed to update report ${reportId} to 'failed' status.`,
+          (updateError as Error).stack,
+        );
+      }
 
       throw new Error(`Report ${reportId} failed`, { cause: error });
     }
@@ -63,14 +70,14 @@ export class ReportsProcessor extends WorkerHost {
           .groupBy(schema.ledger.type);
 
         const byType = Object.fromEntries(
-          rows.map((r) => [r.type, Number(r.total ?? 0)]),
+          rows.map((r) => [r.type, r.total ?? '0']),
         );
 
         return {
-          totalDeposited: byType['deposit'] ?? 0,
-          totalPurchaseVolume: byType['purchase'] ?? 0,
-          totalRoyaltiesPaid: byType['royalty_author'] ?? 0,
-          platformRevenue: byType['royalty_platform'] ?? 0,
+          totalDeposited: byType['deposit'] ?? '0',
+          totalPurchaseVolume: byType['purchase'] ?? '0',
+          totalRoyaltiesPaid: byType['royalty_author'] ?? '0',
+          platformRevenue: byType['royalty_platform'] ?? '0',
           generatedAt: new Date().toISOString(),
         };
       },

@@ -9,10 +9,10 @@ describe('ReportsProcessor', () => {
   let mockDb: any;
 
   const mockAggregates = {
-    totalDeposited: 15000,
-    totalPurchaseVolume: 8000,
-    totalRoyaltiesPaid: 5600,
-    platformRevenue: 2400,
+    totalDeposited: '15000',
+    totalPurchaseVolume: '8000',
+    totalRoyaltiesPaid: '5600',
+    platformRevenue: '2400',
     generatedAt: expect.any(String),
   };
 
@@ -58,11 +58,14 @@ describe('ReportsProcessor', () => {
 
     mockDb.where.mockResolvedValue([]);
 
-    await expect(
-      processor.process({ data: { reportId: 'report-1' } } as unknown as Job<{
-        reportId: string;
-      }>),
-    ).rejects.toThrow();
+    try {
+      await processor.process({
+        data: { reportId: 'report-1' },
+      } as unknown as Job<{ reportId: string }>);
+      fail('Expected processor.process to throw');
+    } catch (err) {
+      expect((err as Error).cause).toBe(originalError);
+    }
 
     const setCalls = mockDb.set.mock.calls;
     expect(setCalls.at(-1)[0]).toEqual({ status: 'failed' });

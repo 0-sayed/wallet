@@ -13,12 +13,18 @@ import { ReportsModule } from './reports/reports.module';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     BullModule.forRootAsync({
-      useFactory: (config: ConfigService) => ({
-        connection: {
-          host: config.get<string>('REDIS_HOST', 'localhost'),
-          port: config.get<number>('REDIS_PORT', 6379),
-        },
-      }),
+      useFactory: (config: ConfigService) => {
+        const redisPort = Number(config.get<string>('REDIS_PORT', '6379'));
+        if (Number.isNaN(redisPort)) {
+          throw new Error('REDIS_PORT must be a valid number');
+        }
+        return {
+          connection: {
+            host: config.get<string>('REDIS_HOST', 'localhost'),
+            port: redisPort,
+          },
+        };
+      },
       inject: [ConfigService],
     }),
     LoggerModule,
