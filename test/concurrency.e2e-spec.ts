@@ -9,10 +9,10 @@ import { AppModule } from '../src/app.module';
 import { DB, AppDatabase } from '../src/common/database/db.module';
 import * as schema from '../src/common/database/schema';
 
-const ALICE_ID = '00000000-0000-0000-0000-000000000010';
-const ALICE_WALLET_ID = '00000000-0000-0000-0000-000000000011';
-const BOB_ID = '00000000-0000-0000-0000-000000000020';
-const BOB_WALLET_ID = '00000000-0000-0000-0000-000000000021';
+const ALICE_ID = crypto.randomUUID();
+const ALICE_WALLET_ID = crypto.randomUUID();
+const BOB_ID = crypto.randomUUID();
+const BOB_WALLET_ID = crypto.randomUUID();
 const PLATFORM_ID =
   process.env.PLATFORM_ACCOUNT_ID ?? '00000000-0000-0000-0000-000000000001';
 const PLATFORM_WALLET_ID =
@@ -39,25 +39,19 @@ describe('Concurrency (e2e)', () => {
 
     db = app.get<AppDatabase>(DB);
 
-    // Provision test fixtures — idempotent via onConflictDoNothing
+    // Provision test fixtures — random UUIDs ensure no collisions
     await db.transaction(async (tx) => {
-      await tx
-        .insert(schema.users)
-        .values([
-          { id: PLATFORM_ID, name: 'Platform' },
-          { id: ALICE_ID, name: 'Alice (buyer)' },
-          { id: BOB_ID, name: 'Bob (author)' },
-        ])
-        .onConflictDoNothing();
+      await tx.insert(schema.users).values([
+        { id: PLATFORM_ID, name: 'Platform' },
+        { id: ALICE_ID, name: 'Alice (buyer)' },
+        { id: BOB_ID, name: 'Bob (author)' },
+      ]);
 
-      await tx
-        .insert(schema.wallets)
-        .values([
-          { id: PLATFORM_WALLET_ID, userId: PLATFORM_ID, balance: 0 },
-          { id: ALICE_WALLET_ID, userId: ALICE_ID, balance: 0 },
-          { id: BOB_WALLET_ID, userId: BOB_ID, balance: 0 },
-        ])
-        .onConflictDoNothing();
+      await tx.insert(schema.wallets).values([
+        { id: PLATFORM_WALLET_ID, userId: PLATFORM_ID, balance: 0 },
+        { id: ALICE_WALLET_ID, userId: ALICE_ID, balance: 0 },
+        { id: BOB_WALLET_ID, userId: BOB_ID, balance: 0 },
+      ]);
     });
   });
 
