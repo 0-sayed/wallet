@@ -9,7 +9,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PostgresError } from 'postgres';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import type { AppDatabase } from '../common/database/db.module';
 import { DB } from '../common/database/db.module';
 import * as schema from '../common/database/schema';
@@ -66,6 +66,17 @@ export class PurchasesService {
             'Idempotency key already used with different purchase parameters',
           );
         }
+        // Ownership check — prevent unauthorized access to purchase records via
+        // replayed idempotency keys belonging to another user's transaction
+        const [buyerWallet] = await this.db
+          .select({ userId: schema.wallets.userId })
+          .from(schema.wallets)
+          .where(eq(schema.wallets.id, existing.buyerWalletId));
+        if (!buyerWallet || buyerWallet.userId !== dto.requestUserId) {
+          throw new ForbiddenException(
+            'Buyer wallet does not belong to the authenticated user',
+          );
+        }
         return existing;
       }
       throw new ConflictException(
@@ -75,15 +86,32 @@ export class PurchasesService {
 
     try {
       return await this.db.transaction(async (tx) => {
-        // Pessimistic lock on buyer wallet
-        const [buyerWallet] = await tx
+        // Lock all three wallets in a single query, sorted by ID, to prevent
+        // deadlocks. Sorting ensures all concurrent transactions acquire locks in
+        // the same order, eliminating the circular wait condition.
+        const walletIds = [
+          dto.buyerWalletId,
+          dto.authorWalletId,
+          this.platformWalletId,
+        ].sort();
+
+        const walletRows = await tx
           .select({
+            id: schema.wallets.id,
             userId: schema.wallets.userId,
             balance: schema.wallets.balance,
           })
           .from(schema.wallets)
-          .where(eq(schema.wallets.id, dto.buyerWalletId))
+          .where(inArray(schema.wallets.id, walletIds))
           .for('update');
+
+        const buyerWallet = walletRows.find((w) => w.id === dto.buyerWalletId);
+        const authorWallet = walletRows.find(
+          (w) => w.id === dto.authorWalletId,
+        );
+        const platformWallet = walletRows.find(
+          (w) => w.id === this.platformWalletId,
+        );
 
         if (!buyerWallet) {
           throw new NotFoundException('Buyer wallet not found');
@@ -103,6 +131,14 @@ export class PurchasesService {
           );
         }
 
+        if (!authorWallet) {
+          throw new BadRequestException('Author wallet does not exist');
+        }
+
+        if (!platformWallet) {
+          throw new BadRequestException('Platform wallet does not exist');
+        }
+
         const authorCut = Math.floor(
           (dto.itemPrice * AUTHOR_ROYALTY_PERCENT) / 100,
         );
@@ -117,28 +153,6 @@ export class PurchasesService {
             updatedAt: now,
           })
           .where(eq(schema.wallets.id, dto.buyerWalletId));
-
-        // Verify author wallet exists (and lock it)
-        const [authorWallet] = await tx
-          .select({ id: schema.wallets.id })
-          .from(schema.wallets)
-          .where(eq(schema.wallets.id, dto.authorWalletId))
-          .for('update');
-
-        if (!authorWallet) {
-          throw new BadRequestException('Author wallet does not exist');
-        }
-
-        // Verify platform wallet exists (and lock it)
-        const [platformWallet] = await tx
-          .select({ id: schema.wallets.id })
-          .from(schema.wallets)
-          .where(eq(schema.wallets.id, this.platformWalletId))
-          .for('update');
-
-        if (!platformWallet) {
-          throw new BadRequestException('Platform wallet does not exist');
-        }
 
         // Credit author
         await tx

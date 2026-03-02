@@ -81,7 +81,10 @@ describe('PurchasesService — idempotency check', () => {
       authorWalletId: 'wallet-author',
       itemPrice: 1000,
     };
-    mockDb.where.mockResolvedValue([existing]);
+    // First call: idempotency check; second call: ownership check on buyer wallet
+    mockDb.where
+      .mockResolvedValueOnce([existing])
+      .mockResolvedValueOnce([{ userId: 'user-1' }]);
 
     const result = await service.purchase({
       idempotencyKey: 'key-1',
@@ -93,6 +96,30 @@ describe('PurchasesService — idempotency check', () => {
 
     expect(result).toEqual(existing);
     expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it('throws ForbiddenException when idempotency key found but buyer wallet belongs to different user', async () => {
+    const existing = {
+      id: 'purchase-1',
+      idempotencyKey: 'key-1',
+      status: 'completed',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 1000,
+    };
+    mockDb.where
+      .mockResolvedValueOnce([existing])
+      .mockResolvedValueOnce([{ userId: 'other-user' }]);
+
+    await expect(
+      service.purchase({
+        idempotencyKey: 'key-1',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 1000,
+        requestUserId: 'user-1',
+      }),
+    ).rejects.toThrow(ForbiddenException);
   });
 
   it('throws ConflictException for duplicate key with pending status', async () => {
@@ -160,6 +187,7 @@ describe('PurchasesService — authorization', () => {
 
   it('throws ForbiddenException when buyer wallet belongs to different user', async () => {
     mockDb.where.mockResolvedValue([]);
+    // Single FOR UPDATE call returns all wallets — buyer has wrong userId
     mockTx.for.mockResolvedValue([
       { id: 'wallet-buyer', userId: 'other-user', balance: 5000 },
     ]);
@@ -189,6 +217,7 @@ describe('PurchasesService — wallet existence validation', () => {
   });
 
   it('throws NotFoundException when buyer wallet does not exist', async () => {
+    // Single FOR UPDATE call returns no wallets
     mockTx.for.mockResolvedValue([]);
 
     await expect(
@@ -203,9 +232,10 @@ describe('PurchasesService — wallet existence validation', () => {
   });
 
   it('throws BadRequestException when author wallet does not exist', async () => {
-    mockTx.for
-      .mockResolvedValueOnce([{ userId: 'user-1', balance: 5000 }])
-      .mockResolvedValueOnce([]);
+    // Single FOR UPDATE call returns only the buyer wallet
+    mockTx.for.mockResolvedValue([
+      { id: 'wallet-buyer', userId: 'user-1', balance: 5000 },
+    ]);
 
     await expect(
       service.purchase({
@@ -219,10 +249,11 @@ describe('PurchasesService — wallet existence validation', () => {
   });
 
   it('throws BadRequestException when platform wallet does not exist', async () => {
-    mockTx.for
-      .mockResolvedValueOnce([{ userId: 'user-1', balance: 5000 }])
-      .mockResolvedValueOnce([{ id: 'wallet-author' }])
-      .mockResolvedValueOnce([]);
+    // Single FOR UPDATE call returns buyer + author but no platform wallet
+    mockTx.for.mockResolvedValue([
+      { id: 'wallet-buyer', userId: 'user-1', balance: 5000 },
+      { id: 'wallet-author' },
+    ]);
 
     await expect(
       service.purchase({
