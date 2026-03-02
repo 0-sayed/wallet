@@ -55,10 +55,10 @@ describe('WalletsService', () => {
 
   describe('deposit', () => {
     it('throws BadRequestException if amount is 0 or negative', async () => {
-      await expect(service.deposit('wallet-1', 0)).rejects.toThrow(
+      await expect(service.deposit('user-1', 'wallet-1', 0)).rejects.toThrow(
         BadRequestException,
       );
-      await expect(service.deposit('wallet-1', -100)).rejects.toThrow(
+      await expect(service.deposit('user-1', 'wallet-1', -100)).rejects.toThrow(
         BadRequestException,
       );
     });
@@ -69,7 +69,7 @@ describe('WalletsService', () => {
         cb(tx),
       );
 
-      await expect(service.deposit('wallet-1', 100)).rejects.toThrow(
+      await expect(service.deposit('user-1', 'wallet-1', 100)).rejects.toThrow(
         NotFoundException,
       );
     });
@@ -84,7 +84,7 @@ describe('WalletsService', () => {
         cb(tx),
       );
 
-      const result = await service.deposit('wallet-1', 100);
+      const result = await service.deposit('user-1', 'wallet-1', 100);
       expect(result.balance).toBe(5100);
       expect(tx.insert).toHaveBeenCalled();
     });

@@ -3,14 +3,18 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
+import { DB, AppDatabase } from '../src/common/database/db.module';
+import * as schema from '../src/common/database/schema';
+import { eq } from 'drizzle-orm';
 
-// Seed IDs — must match seed.ts
 const ALICE_ID = '00000000-0000-0000-0000-000000000010';
 const ALICE_WALLET_ID = '00000000-0000-0000-0000-000000000011';
+const BOB_ID = '00000000-0000-0000-0000-000000000020';
 const NON_EXISTENT_WALLET = '00000000-0000-0000-0000-ffffffffffff';
 
 describe('POST /wallets/:walletId/deposit (integration)', () => {
   let app: INestApplication<App>;
+  let db: AppDatabase;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -26,6 +30,30 @@ describe('POST /wallets/:walletId/deposit (integration)', () => {
       }),
     );
     await app.init();
+
+    db = app.get<AppDatabase>(DB);
+
+    // Provision test fixtures — idempotent via onConflictDoNothing
+    await db.transaction(async (tx) => {
+      await tx
+        .insert(schema.users)
+        .values([
+          { id: ALICE_ID, name: 'Alice (buyer)' },
+          { id: BOB_ID, name: 'Bob (author)' },
+        ])
+        .onConflictDoNothing();
+
+      await tx
+        .insert(schema.wallets)
+        .values([{ id: ALICE_WALLET_ID, userId: ALICE_ID, balance: 0 }])
+        .onConflictDoNothing();
+    });
+
+    // Reset Alice's wallet balance to 0 for deterministic tests
+    await db
+      .update(schema.wallets)
+      .set({ balance: 0 })
+      .where(eq(schema.wallets.id, ALICE_WALLET_ID));
   });
 
   afterAll(async () => {
@@ -33,7 +61,6 @@ describe('POST /wallets/:walletId/deposit (integration)', () => {
   });
 
   it('concurrent deposits do not lose updates', async () => {
-    // Fire 10 concurrent deposits of 100 cents each
     const depositCount = 10;
     const depositAmount = 100;
 
@@ -46,12 +73,10 @@ describe('POST /wallets/:walletId/deposit (integration)', () => {
       ),
     );
 
-    // All should succeed
     for (const res of results) {
       expect(res.status).toBe(201);
     }
 
-    // Final balance should reflect all deposits (no lost updates)
     const balances = results.map(
       (r) => (r.body as { balance: number }).balance,
     );
@@ -71,7 +96,14 @@ describe('POST /wallets/:walletId/deposit (integration)', () => {
       .send({ amount: 500 });
 
     expect(res.status).toBe(404);
-    // If we got here without 500, the transaction rolled back cleanly
-    // (a partial write would violate FK constraints or leave orphan ledger rows)
+  });
+
+  it("returns 404 when depositing into another user's wallet", async () => {
+    const res = await request(app.getHttpServer())
+      .post(`/wallets/${ALICE_WALLET_ID}/deposit`)
+      .set('X-User-Id', BOB_ID)
+      .send({ amount: 100 });
+
+    expect(res.status).toBe(404);
   });
 });
