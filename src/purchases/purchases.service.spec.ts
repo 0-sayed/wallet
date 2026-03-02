@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { PostgresError } from 'postgres';
 import { PurchasesService } from './purchases.service';
 import { DB } from '../common/database/db.module';
 import {
@@ -13,6 +14,7 @@ function createMockTx() {
     select: jest.fn().mockReturnThis(),
     from: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
+    orderBy: jest.fn().mockReturnThis(),
     for: jest.fn().mockReturnThis(),
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
@@ -264,5 +266,40 @@ describe('PurchasesService — wallet existence validation', () => {
         requestUserId: 'user-1',
       }),
     ).rejects.toThrow(BadRequestException);
+  });
+});
+
+describe('PurchasesService — concurrent duplicate key (DrizzleQueryError wrapping)', () => {
+  it('throws ConflictException when DrizzleQueryError wraps a PostgresError unique_violation', async () => {
+    // Drizzle wraps raw postgres errors in DrizzleQueryError with cause set to the
+    // PostgresError. The service must unwrap cause to detect the 23505 code.
+    const pgError = Object.assign(new PostgresError('duplicate key'), {
+      code: '23505',
+      severity_local: 'ERROR',
+      severity: 'ERROR',
+    });
+
+    const drizzleQueryError = Object.assign(
+      new Error(`Failed query: insert...\nparams: ...`),
+      { cause: pgError },
+    );
+
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    mockDb.where.mockResolvedValue([]); // no existing purchase
+    // Make the transaction itself throw the wrapped drizzle error
+    mockDb.transaction = jest.fn().mockRejectedValue(drizzleQueryError);
+
+    const service = await createTestService(mockDb);
+
+    await expect(
+      service.purchase({
+        idempotencyKey: 'key-concurrent',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 1000,
+        requestUserId: 'user-1',
+      }),
+    ).rejects.toThrow(ConflictException);
   });
 });

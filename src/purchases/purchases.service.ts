@@ -9,13 +9,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PostgresError } from 'postgres';
-import { eq, inArray, sql } from 'drizzle-orm';
+import { asc, eq, inArray, sql } from 'drizzle-orm';
 import type { AppDatabase } from '../common/database/db.module';
 import { DB } from '../common/database/db.module';
 import * as schema from '../common/database/schema';
 
 const AUTHOR_ROYALTY_PERCENT = 70;
 const PG_UNIQUE_VIOLATION = '23505';
+const PG_DEADLOCK = '40P01';
 
 interface PurchaseDto {
   idempotencyKey: string;
@@ -86,14 +87,15 @@ export class PurchasesService {
 
     try {
       return await this.db.transaction(async (tx) => {
-        // Lock all three wallets in a single query, sorted by ID, to prevent
-        // deadlocks. Sorting ensures all concurrent transactions acquire locks in
-        // the same order, eliminating the circular wait condition.
+        // Lock all three wallets in a single query. The .orderBy(asc(...))
+        // below is what enforces consistent lock acquisition order in
+        // PostgreSQL, eliminating the circular wait condition that causes
+        // deadlocks.
         const walletIds = [
           dto.buyerWalletId,
           dto.authorWalletId,
           this.platformWalletId,
-        ].sort();
+        ];
 
         const walletRows = await tx
           .select({
@@ -103,6 +105,7 @@ export class PurchasesService {
           })
           .from(schema.wallets)
           .where(inArray(schema.wallets.id, walletIds))
+          .orderBy(asc(schema.wallets.id))
           .for('update');
 
         const buyerWallet = walletRows.find((w) => w.id === dto.buyerWalletId);
@@ -212,13 +215,26 @@ export class PurchasesService {
         return purchase;
       });
     } catch (error) {
-      // Postgres unique_violation on idempotency_key — concurrent duplicate
-      if (
-        error instanceof PostgresError &&
-        error.code === PG_UNIQUE_VIOLATION
-      ) {
+      // Drizzle may wrap the raw PostgresError in a DrizzleQueryError, so we
+      // check both the error itself and its cause for the pg error code.
+      const pgError =
+        error instanceof PostgresError
+          ? error
+          : error instanceof Error && error.cause instanceof PostgresError
+            ? error.cause
+            : null;
+      // 23505: unique_violation — concurrent duplicate idempotency key
+      if (pgError?.code === PG_UNIQUE_VIOLATION) {
         throw new ConflictException(
           'Duplicate purchase: idempotency key already exists',
+        );
+      }
+      // 40P01: deadlock_detected — safety net; .orderBy(asc(...)) in the FOR
+      // UPDATE query enforces consistent lock acquisition order in PostgreSQL,
+      // preventing most deadlocks, but this guards against any edge cases.
+      if (pgError?.code === PG_DEADLOCK) {
+        throw new ConflictException(
+          'Transaction deadlock detected, please retry',
         );
       }
       throw error;
