@@ -5,6 +5,7 @@ import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
+  NotFoundException,
 } from '@nestjs/common';
 
 function createMockTx() {
@@ -172,5 +173,65 @@ describe('PurchasesService — authorization', () => {
         requestUserId: 'user-1',
       }),
     ).rejects.toThrow(ForbiddenException);
+  });
+});
+
+describe('PurchasesService — wallet existence validation', () => {
+  let service: PurchasesService;
+  let mockDb: ReturnType<typeof createMockDb>;
+  let mockTx: ReturnType<typeof createMockTx>;
+
+  beforeEach(async () => {
+    mockTx = createMockTx();
+    mockDb = createMockDb(mockTx);
+    mockDb.where.mockResolvedValue([]); // no existing purchase
+    service = await createTestService(mockDb);
+  });
+
+  it('throws NotFoundException when buyer wallet does not exist', async () => {
+    mockTx.for.mockResolvedValue([]);
+
+    await expect(
+      service.purchase({
+        idempotencyKey: 'key-1',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 1000,
+        requestUserId: 'user-1',
+      }),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('throws BadRequestException when author wallet does not exist', async () => {
+    mockTx.for
+      .mockResolvedValueOnce([{ userId: 'user-1', balance: 5000 }])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      service.purchase({
+        idempotencyKey: 'key-1',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 1000,
+        requestUserId: 'user-1',
+      }),
+    ).rejects.toThrow(BadRequestException);
+  });
+
+  it('throws BadRequestException when platform wallet does not exist', async () => {
+    mockTx.for
+      .mockResolvedValueOnce([{ userId: 'user-1', balance: 5000 }])
+      .mockResolvedValueOnce([{ id: 'wallet-author' }])
+      .mockResolvedValueOnce([]);
+
+    await expect(
+      service.purchase({
+        idempotencyKey: 'key-1',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 1000,
+        requestUserId: 'user-1',
+      }),
+    ).rejects.toThrow(BadRequestException);
   });
 });

@@ -6,7 +6,9 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
+import { PostgresError } from 'postgres';
 import { eq, sql } from 'drizzle-orm';
 import type { AppDatabase } from '../common/database/db.module';
 import { DB } from '../common/database/db.module';
@@ -84,10 +86,7 @@ export class PurchasesService {
           .for('update');
 
         if (!buyerWallet) {
-          throw new HttpException(
-            'Insufficient funds',
-            HttpStatus.PAYMENT_REQUIRED,
-          );
+          throw new NotFoundException('Buyer wallet not found');
         }
 
         // Ownership check — buyer wallet must belong to the requesting user
@@ -118,6 +117,28 @@ export class PurchasesService {
             updatedAt: now,
           })
           .where(eq(schema.wallets.id, dto.buyerWalletId));
+
+        // Verify author wallet exists (and lock it)
+        const [authorWallet] = await tx
+          .select({ id: schema.wallets.id })
+          .from(schema.wallets)
+          .where(eq(schema.wallets.id, dto.authorWalletId))
+          .for('update');
+
+        if (!authorWallet) {
+          throw new BadRequestException('Author wallet does not exist');
+        }
+
+        // Verify platform wallet exists (and lock it)
+        const [platformWallet] = await tx
+          .select({ id: schema.wallets.id })
+          .from(schema.wallets)
+          .where(eq(schema.wallets.id, this.platformWalletId))
+          .for('update');
+
+        if (!platformWallet) {
+          throw new BadRequestException('Platform wallet does not exist');
+        }
 
         // Credit author
         await tx
@@ -179,10 +200,8 @@ export class PurchasesService {
     } catch (error) {
       // Postgres unique_violation on idempotency_key — concurrent duplicate
       if (
-        typeof error === 'object' &&
-        error !== null &&
-        'code' in error &&
-        (error as { code: string }).code === PG_UNIQUE_VIOLATION
+        error instanceof PostgresError &&
+        error.code === PG_UNIQUE_VIOLATION
       ) {
         throw new ConflictException(
           'Duplicate purchase: idempotency key already exists',
