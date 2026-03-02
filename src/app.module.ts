@@ -5,6 +5,7 @@ import { DbModule } from './common/database/db.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { HealthController } from './health/health.controller';
 import { PurchasesModule } from './purchases/purchases.module';
+import { WalletsModule } from './wallets/wallets.module';
 
 @Module({
   imports: [
@@ -12,6 +13,7 @@ import { PurchasesModule } from './purchases/purchases.module';
     LoggerModule,
     DbModule,
     PurchasesModule,
+    WalletsModule,
   ],
   controllers: [HealthController],
 })
