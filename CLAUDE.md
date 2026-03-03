@@ -226,7 +226,7 @@ Required for this project — invoke before writing relevant code:
 
 ## API Documentation
 
-Swagger UI is available at `/api` in non-production environments (`NODE_ENV !== 'production'`).
+Swagger UI is available at `/api` when `SWAGGER_ENABLED=true` (explicit opt-in; defaults to off).
 
 - `@nestjs/swagger` CLI plugin handles automatic DTO inference — no `@ApiProperty` needed on DTO classes
 - Manual annotations are required for: `@ApiTags`, `@ApiHeader`, `@ApiParam`, and error response decorators
