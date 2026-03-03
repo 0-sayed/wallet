@@ -224,6 +224,14 @@ Required for this project — invoke before writing relevant code:
 - `nestjs-best-practices` — before writing any NestJS module, controller, service, or guard
 - `postgres-drizzle` — before writing schema changes, queries, or migrations
 
+## API Documentation
+
+Swagger UI is available at `/api` in non-production environments (`NODE_ENV !== 'production'`).
+
+- `@nestjs/swagger` CLI plugin handles automatic DTO inference — no `@ApiProperty` needed on DTO classes
+- Manual annotations are required for: `@ApiTags`, `@ApiHeader`, `@ApiParam`, and error response decorators
+- OpenAPI JSON spec available at `/api-json`
+
 ## CI
 
 Two GitHub Actions workflows:
