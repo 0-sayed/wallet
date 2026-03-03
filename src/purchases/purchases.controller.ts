@@ -4,8 +4,10 @@ import {
   Controller,
   Headers,
   Post,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import {
   ApiBadRequestResponse,
   ApiConflictResponse,
@@ -51,7 +53,7 @@ export class PurchasesController {
     description: 'Idempotency conflict or deadlock — retry',
   })
   purchase(
-    @Headers('x-user-id') userId: string,
+    @Req() req: Request & { userId: string },
     @Headers('idempotency-key') idempotencyKey: string,
     @Body() dto: PurchaseBodyDto,
   ): Promise<PurchaseResponseDto> {
@@ -66,7 +68,7 @@ export class PurchasesController {
       buyerWalletId: dto.buyerWalletId,
       authorWalletId: dto.authorWalletId,
       itemPrice: dto.itemPrice,
-      requestUserId: userId,
+      requestUserId: req.userId,
     });
   }
 }

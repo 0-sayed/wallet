@@ -15,7 +15,8 @@ async function bootstrap() {
       transform: true,
     }),
   );
-  if (process.env.NODE_ENV !== 'production') {
+  const enableSwagger = process.env.SWAGGER_ENABLED === 'true';
+  if (enableSwagger) {
     const config = new DocumentBuilder()
       .setTitle('Wallet API')
       .setDescription(
