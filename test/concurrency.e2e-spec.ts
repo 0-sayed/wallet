@@ -39,16 +39,24 @@ describe('Concurrency (e2e)', () => {
 
     db = app.get<AppDatabase>(DB);
 
-    // Provision test fixtures — random UUIDs ensure no collisions
+    // Provision test fixtures
+    // Platform rows: fixed IDs from env — idempotent across runs
+    // Alice/Bob rows: random UUIDs — no conflict possible, no onConflictDoNothing
     await db.transaction(async (tx) => {
+      await tx
+        .insert(schema.users)
+        .values({ id: PLATFORM_ID, name: 'Platform' })
+        .onConflictDoNothing();
       await tx.insert(schema.users).values([
-        { id: PLATFORM_ID, name: 'Platform' },
         { id: ALICE_ID, name: 'Alice (buyer)' },
         { id: BOB_ID, name: 'Bob (author)' },
       ]);
 
+      await tx
+        .insert(schema.wallets)
+        .values({ id: PLATFORM_WALLET_ID, userId: PLATFORM_ID, balance: 0 })
+        .onConflictDoNothing();
       await tx.insert(schema.wallets).values([
-        { id: PLATFORM_WALLET_ID, userId: PLATFORM_ID, balance: 0 },
         { id: ALICE_WALLET_ID, userId: ALICE_ID, balance: 0 },
         { id: BOB_WALLET_ID, userId: BOB_ID, balance: 0 },
       ]);
