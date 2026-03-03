@@ -1,10 +1,11 @@
-import { IsInt, IsUUID, Min } from 'class-validator';
+import { IsInt, Matches, Min } from 'class-validator';
+import { UUID_REGEX } from '../../common/validation/uuid';
 
 export class PurchaseBodyDto {
-  @IsUUID()
+  @Matches(UUID_REGEX, { message: 'buyerWalletId must be a UUID' })
   buyerWalletId!: string;
 
-  @IsUUID()
+  @Matches(UUID_REGEX, { message: 'authorWalletId must be a UUID' })
   authorWalletId!: string;
 
   @IsInt()

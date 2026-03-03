@@ -9,9 +9,7 @@ import {
 import { PurchasesService } from './purchases.service';
 import { UserIdGuard } from '../common/guards/user-id.guard';
 import { PurchaseBodyDto } from './dto/purchase.dto';
-
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+import { UUID_REGEX } from '../common/validation/uuid';
 
 @Controller('purchases')
 @UseGuards(UserIdGuard)
