@@ -43,6 +43,7 @@ pnpm test:e2e           # e2e tests (requires app module — no live DB needed)
 # Database
 pnpm db:generate        # generate Drizzle migration from schema changes
 pnpm db:migrate         # apply pending migrations to DATABASE_URL
+pnpm db:seed            # seed platform user + wallet
 pnpm db:studio          # Drizzle Studio UI (never run in automation — it's a long-running GUI)
 
 # Docker services (Postgres on 5435, Redis on 6379)
@@ -59,36 +60,32 @@ docker compose exec postgres psql -U wallet -d wallet -c "\dt"
 
 ## Architecture
 
-### Module-per-domain
-
-Each business domain lives in its own NestJS module under `src/<domain>/`. Common infrastructure lives under `src/common/`.
+Each business domain lives in its own NestJS module under `src/<domain>/`. Common infrastructure lives under `src/common/`. See [docs/architecture.md](docs/architecture.md) for diagrams and details.
 
 ```
 src/
-  app.module.ts                    # root module — imports domain modules, registers middleware
-  main.ts                          # bootstrap: Pino logger, ValidationPipe, shutdown hooks, port 3000
+  app.module.ts
+  main.ts
   common/
     database/
-      schema.ts                    # Drizzle schema — all tables and enums (single source of truth)
+      schema.ts          # Drizzle schema — all tables and enums
+      db.module.ts        # connection provider
+      seed.ts             # platform user + wallet seeder
     logger/
-      logger.module.ts             # PinoLoggerModule wrapper (pino-pretty dev / JSON prod)
+      logger.module.ts
     middleware/
-      correlation-id.middleware.ts # extracts or generates X-Request-Id, attaches to Pino context
+      correlation-id.middleware.ts
+    guards/
+      user-id.guard.ts
+    validation/
+      uuid.ts
   health/
-    health.controller.ts           # GET /health → { status: "ok" }
-    health.controller.spec.ts      # exemplary unit test pattern
+  wallets/
+  purchases/
+  reports/
 test/
-  app.e2e-spec.ts                  # exemplary e2e test pattern
-drizzle/                           # generated migration SQL files (gitignored)
+drizzle/                  # generated migration SQL (gitignored)
 ```
-
-### Adding a new domain
-
-1. Create `src/<domain>/<domain>.module.ts`
-2. Add controllers, services, repositories under that directory
-3. Import the module in `app.module.ts`
-4. Invoke the `nestjs-best-practices` skill before writing NestJS module code
-5. Invoke the `postgres-drizzle` skill before writing schema or queries
 
 ## Database
 
@@ -106,16 +103,7 @@ drizzle/                           # generated migration SQL files (gitignored)
 - `wallets.user_id` has a unique index (one wallet per user)
 - `purchases.idempotency_key` has a unique index (DB-enforced dedup)
 
-**Migration workflow:**
-
-```bash
-# 1. Edit src/common/database/schema.ts
-# 2. Generate migration
-pnpm db:generate
-# 3. Review generated SQL in drizzle/
-# 4. Apply
-pnpm db:migrate
-```
+**Migration workflow:** edit `schema.ts` → `pnpm db:generate` → review SQL in `drizzle/` → `pnpm db:migrate`
 
 ## Validation
 
@@ -142,80 +130,13 @@ Use the injected `Logger` from `nestjs-pino` in services and controllers (not `c
 
 ## Testing Patterns
 
-### Unit tests (`*.spec.ts` in `src/`)
-
-Follow `src/health/health.controller.spec.ts`:
-
-```typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { HealthController } from './health.controller';
-
-describe('HealthController', () => {
-  let controller: HealthController;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [HealthController],
-    }).compile();
-    controller = module.get<HealthController>(HealthController);
-  });
-
-  it('returns { status: "ok" }', () => {
-    expect(controller.health()).toEqual({ status: 'ok' });
-  });
-});
-```
-
-### E2e tests (`*.e2e-spec.ts` in `test/`)
-
-Follow `test/app.e2e-spec.ts`:
-
-```typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
-import request from 'supertest';
-import { App } from 'supertest/types';
-import { AppModule } from './../src/app.module';
-
-describe('HealthController (e2e)', () => {
-  let app: INestApplication<App>;
-
-  beforeEach(async () => {
-    const moduleFixture: TestingModule = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
-    app = moduleFixture.createNestApplication();
-    await app.init();
-  });
-
-  afterEach(async () => {
-    await app.close();
-  });
-
-  it('/health (GET)', () => {
-    return request(app.getHttpServer())
-      .get('/health')
-      .expect(200)
-      .expect({ status: 'ok' });
-  });
-});
-```
-
-**Coverage thresholds:** 50% global (branches, functions, lines, statements). Excluded from coverage: `main.ts`, `*.spec.ts`, `*.module.ts`, `**/database/schema.ts`.
+- **Unit tests** (`*.spec.ts` in `src/`): follow `src/health/health.controller.spec.ts` as the exemplary pattern
+- **E2e tests** (`*.e2e-spec.ts` in `test/`): follow `test/app.e2e-spec.ts` as the exemplary pattern
+- **Coverage thresholds:** 50% global (branches, functions, lines, statements). Excluded from coverage: `main.ts`, `*.spec.ts`, `*.module.ts`, `**/database/schema.ts`
 
 ## Environment Variables
 
-See `.env.example` for all required vars:
-
-```bash
-DATABASE_URL=postgres://wallet:wallet@localhost:5435/wallet
-REDIS_HOST=localhost
-REDIS_PORT=6379
-PLATFORM_ACCOUNT_ID=00000000-0000-0000-0000-000000000001
-PLATFORM_WALLET_ID=00000000-0000-0000-0000-000000000002
-```
-
-> **Note:** Postgres runs on host port **5435** (not 5432 — that port is taken by a local instance). The Docker Compose file maps `5435:5432`.
+See `.env.example` for all required vars. Note: Postgres runs on host port **5435** (not 5432), mapped via Docker Compose.
 
 ## Skills
 
@@ -234,9 +155,10 @@ Swagger UI is available at `/api` when `SWAGGER_ENABLED=true` (explicit opt-in; 
 
 ## CI
 
-Two GitHub Actions workflows:
+Three GitHub Actions workflows:
 
-- `.github/workflows/ci.yml` — lint → typecheck → test → build (with Postgres service container)
+- `.github/workflows/ci.yml` — lint → audit → typecheck → test → build (with Postgres + Redis service containers)
 - `.github/workflows/pr-check.yml` — conventional commit title enforcement + dependency review
+- `.github/workflows/auto-assign-pr.yml` — auto-assigns PR author
 
 Branch protection (manual GitHub UI setup): require PR for `main`, require CI pass, no direct push.
