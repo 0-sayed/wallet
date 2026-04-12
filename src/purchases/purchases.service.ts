@@ -6,18 +6,22 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PostgresError } from 'postgres';
 import { asc, eq, inArray, sql } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
 import type { AppDatabase } from '../common/database/db.module';
 import { DB } from '../common/database/db.module';
+import { REDIS_CLIENT } from '../common/redis/redis.module';
 import * as schema from '../common/database/schema';
 
 const AUTHOR_ROYALTY_PERCENT = 70;
 const CENTI_CENTS = 100;
 const PG_UNIQUE_VIOLATION = '23505';
 const PG_DEADLOCK = '40P01';
+const IDEMPOTENCY_TTL = 86400;
 
 interface PurchaseDto {
   idempotencyKey: string;
@@ -29,9 +33,12 @@ interface PurchaseDto {
 
 @Injectable()
 export class PurchasesService {
+  private readonly logger = new Logger(PurchasesService.name);
+
   constructor(
     @Inject(DB) private db: AppDatabase,
     @Inject('PLATFORM_WALLET_ID') private platformWalletId: string,
+    @Inject(REDIS_CLIENT) private redis: Redis,
   ) {}
 
   async purchase(dto: PurchaseDto) {
@@ -39,6 +46,87 @@ export class PurchasesService {
     if (dto.buyerWalletId === dto.authorWalletId) {
       throw new BadRequestException(
         'Buyer and author wallets must be different',
+      );
+    }
+
+    const redisKey = `idempotency:${dto.idempotencyKey}`;
+
+    // Redis SETNX edge-cache — short-circuit before hitting the DB
+    try {
+      const nx = await this.redis.set(
+        redisKey,
+        'processing',
+        'EX',
+        IDEMPOTENCY_TTL,
+        'NX',
+      );
+
+      if (nx === null) {
+        // Key exists in Redis — cached result or in-flight
+        const cached = await this.redis.get(redisKey);
+
+        if (cached === 'processing') {
+          throw new ConflictException(
+            'Purchase with this idempotency key is still in flight',
+          );
+        }
+
+        if (cached !== null) {
+          // cached is a JSON-serialized purchase result
+          const parsed = JSON.parse(cached) as {
+            id: string;
+            idempotencyKey: string;
+            status: 'pending' | 'completed' | 'failed';
+            buyerWalletId: string;
+            authorWalletId: string;
+            itemPrice: number;
+            createdAt: string;
+          };
+          // Re-hydrate createdAt to a Date to match the DB return shape
+          const cachedPurchase = {
+            ...parsed,
+            createdAt: new Date(parsed.createdAt),
+          };
+
+          // Payload drift check
+          if (
+            cachedPurchase.buyerWalletId !== dto.buyerWalletId ||
+            cachedPurchase.authorWalletId !== dto.authorWalletId ||
+            cachedPurchase.itemPrice !== dto.itemPrice
+          ) {
+            throw new ConflictException(
+              'Idempotency key already used with different purchase parameters',
+            );
+          }
+
+          // Ownership check (same as DB path)
+          const [buyerWallet] = await this.db
+            .select({ userId: schema.wallets.userId })
+            .from(schema.wallets)
+            .where(eq(schema.wallets.id, cachedPurchase.buyerWalletId));
+
+          if (!buyerWallet || buyerWallet.userId !== dto.requestUserId) {
+            throw new ForbiddenException(
+              'Buyer wallet does not belong to the authenticated user',
+            );
+          }
+
+          return cachedPurchase;
+        }
+
+        // cached === null: key was evicted between NX check and GET (eviction race)
+        // Fall through to DB path to re-validate
+      }
+
+      // nx === 'OK' — new request, fall through to DB check
+    } catch (error) {
+      if (error instanceof HttpException) {
+        throw error;
+      }
+      // Redis unavailable — log warning, fall through to DB
+      this.logger.warn(
+        { err: error },
+        'Redis unavailable, falling through to DB path',
       );
     }
 
@@ -79,6 +167,17 @@ export class PurchasesService {
             'Buyer wallet does not belong to the authenticated user',
           );
         }
+        // Populate Redis on DB cold-start hit
+        try {
+          await this.redis.set(
+            redisKey,
+            JSON.stringify(existing),
+            'EX',
+            IDEMPOTENCY_TTL,
+          );
+        } catch {
+          /* Redis unavailable — ignore */
+        }
         return existing;
       }
       throw new ConflictException(
@@ -86,8 +185,9 @@ export class PurchasesService {
       );
     }
 
+    let result: typeof schema.purchases.$inferSelect;
     try {
-      return await this.db.transaction(async (tx) => {
+      result = await this.db.transaction(async (tx) => {
         // Lock all three wallets in a single query. The .orderBy(asc(...))
         // below is what enforces consistent lock acquisition order in
         // PostgreSQL, eliminating the circular wait condition that causes
@@ -281,5 +381,19 @@ export class PurchasesService {
       }
       throw error;
     }
+
+    // Cache after successful commit
+    try {
+      await this.redis.set(
+        redisKey,
+        JSON.stringify(result),
+        'EX',
+        IDEMPOTENCY_TTL,
+      );
+    } catch {
+      /* Redis unavailable — ignore */
+    }
+
+    return result;
   }
 }
