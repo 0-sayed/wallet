@@ -357,6 +357,13 @@ export class PurchasesService {
         return purchase;
       });
     } catch (error) {
+      // Delete the 'processing' sentinel so clients can retry after a failed transaction
+      try {
+        await this.redis.del(redisKey);
+      } catch {
+        /* Redis unavailable — ignore */
+      }
+
       // Drizzle may wrap the raw PostgresError in a DrizzleQueryError, so we
       // check both the error itself and its cause for the pg error code.
       const pgError =

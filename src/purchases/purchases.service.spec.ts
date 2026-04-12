@@ -40,6 +40,7 @@ function createMockRedis() {
   return {
     set: jest.fn().mockResolvedValue('OK'), // default: NX succeeds (new request)
     get: jest.fn(),
+    del: jest.fn().mockResolvedValue(1),
   };
 }
 
@@ -621,6 +622,28 @@ describe('PurchasesService — Redis idempotency cache', () => {
     await expect(service.purchase(purchaseDto)).rejects.toThrow(
       ForbiddenException,
     );
+  });
+
+  it('clears the processing sentinel when the transaction fails', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns 'OK' — new request, sentinel is set
+    mockRedis.set.mockResolvedValue('OK');
+    // DB idempotency check: no existing purchase
+    mockDb.where.mockResolvedValue([]);
+    // Transaction throws a non-PG error (e.g., insufficient funds)
+    mockDb.transaction = jest
+      .fn()
+      .mockRejectedValue(new BadRequestException('Insufficient funds'));
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
   });
 
   it('Successful purchase populates Redis cache', async () => {
