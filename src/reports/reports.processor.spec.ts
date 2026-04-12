@@ -9,10 +9,10 @@ describe('ReportsProcessor', () => {
   let mockDb: any;
 
   const mockAggregates = {
-    totalDeposited: '15000',
-    totalPurchaseVolume: '8000',
-    totalRoyaltiesPaid: '5600',
-    platformRevenue: '2400',
+    totalDeposited: 15000,
+    totalPurchaseVolume: 8000,
+    totalRoyaltiesPaid: 5600,
+    platformRevenue: 2400,
     generatedAt: expect.any(String),
   };
 
@@ -31,6 +31,29 @@ describe('ReportsProcessor', () => {
     }).compile();
 
     processor = module.get(ReportsProcessor);
+  });
+
+  it('reads totals from ledger_totals (O(1) — no GROUP BY scan)', async () => {
+    const totalsRows = [
+      { type: 'deposit', total: 15000 },
+      { type: 'purchase', total: 8000 },
+      { type: 'royalty_author', total: 5600 },
+      { type: 'royalty_platform', total: 2400 },
+    ];
+    // Override from() to resolve with totals rows for this test
+    mockDb.from.mockResolvedValueOnce(totalsRows);
+
+    const result = await (processor as any).aggregate();
+
+    expect(result).toEqual({
+      totalDeposited: 15000,
+      totalPurchaseVolume: 8000,
+      totalRoyaltiesPaid: 5600,
+      platformRevenue: 2400,
+      generatedAt: expect.any(String),
+    });
+    // groupBy must not have been called — we no longer scan the ledger
+    expect(mockDb.groupBy).toBeUndefined();
   });
 
   it('transitions report from queued to processing to completed with payload', async () => {
