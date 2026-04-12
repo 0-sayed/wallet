@@ -8,6 +8,7 @@ import {
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import * as schema from '../common/database/schema';
 
 function createMockTx() {
   return {
@@ -20,6 +21,7 @@ function createMockTx() {
     set: jest.fn().mockReturnThis(),
     insert: jest.fn().mockReturnThis(),
     values: jest.fn().mockReturnThis(),
+    onConflictDoUpdate: jest.fn().mockReturnThis(),
     returning: jest.fn(),
   };
 }
@@ -427,5 +429,53 @@ describe('PurchasesService — happy path accrual integration', () => {
     // set calls: [0] buyer, [1] author (has fractionalBalance), [2] platform
     const authorSetArgs = mockTx.set.mock.calls[1][0];
     expect(authorSetArgs.fractionalBalance).toBe(10);
+  });
+
+  it('upserts ledger_totals for purchase, royalty_author, and royalty_platform', async () => {
+    mockTx.for.mockResolvedValue([
+      {
+        id: 'wallet-buyer',
+        userId: 'user-1',
+        balance: 5000,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'wallet-author',
+        userId: 'author-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'platform-wallet-id',
+        userId: 'platform-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+    ]);
+    mockTx.returning.mockResolvedValueOnce([
+      {
+        id: 'purchase-1',
+        idempotencyKey: 'key-1',
+        status: 'completed',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 1000,
+        createdAt: new Date(),
+      },
+    ]);
+
+    await service.purchase({
+      idempotencyKey: 'key-1',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 1000,
+      requestUserId: 'user-1',
+    });
+
+    // ledger_totals upserts: insert called with schema.ledgerTotals for each of 3 types
+    const insertCalls = mockTx.insert.mock.calls.map((c: unknown[]) => c[0]);
+    expect(
+      insertCalls.filter((t: unknown) => t === schema.ledgerTotals),
+    ).toHaveLength(3);
   });
 });

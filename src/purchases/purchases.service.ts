@@ -227,6 +227,33 @@ export class PurchasesService {
           await tx.insert(schema.ledger).values(ledgerEntries);
         }
 
+        // Update running totals — same transaction, always consistent
+        await tx
+          .insert(schema.ledgerTotals)
+          .values({ type: 'purchase', total: dto.itemPrice })
+          .onConflictDoUpdate({
+            target: schema.ledgerTotals.type,
+            set: {
+              total: sql`${schema.ledgerTotals.total} + ${dto.itemPrice}`,
+            },
+          });
+        await tx
+          .insert(schema.ledgerTotals)
+          .values({ type: 'royalty_author', total: totalAuthorCents })
+          .onConflictDoUpdate({
+            target: schema.ledgerTotals.type,
+            set: {
+              total: sql`${schema.ledgerTotals.total} + ${totalAuthorCents}`,
+            },
+          });
+        await tx
+          .insert(schema.ledgerTotals)
+          .values({ type: 'royalty_platform', total: platformCut })
+          .onConflictDoUpdate({
+            target: schema.ledgerTotals.type,
+            set: { total: sql`${schema.ledgerTotals.total} + ${platformCut}` },
+          });
+
         return purchase;
       });
     } catch (error) {
