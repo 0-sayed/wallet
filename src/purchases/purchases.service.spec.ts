@@ -2,12 +2,14 @@ import { Test } from '@nestjs/testing';
 import { PostgresError } from 'postgres';
 import { PurchasesService } from './purchases.service';
 import { DB } from '../common/database/db.module';
+import { REDIS_CLIENT } from '../common/redis/redis.module';
 import {
   BadRequestException,
   ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
+import * as schema from '../common/database/schema';
 
 function createMockTx() {
   return {
@@ -20,6 +22,7 @@ function createMockTx() {
     set: jest.fn().mockReturnThis(),
     insert: jest.fn().mockReturnThis(),
     values: jest.fn().mockReturnThis(),
+    onConflictDoUpdate: jest.fn().mockReturnThis(),
     returning: jest.fn(),
   };
 }
@@ -33,34 +36,113 @@ function createMockDb(mockTx: ReturnType<typeof createMockTx>) {
   };
 }
 
-async function createTestService(mockDb: ReturnType<typeof createMockDb>) {
+function createMockRedis() {
+  return {
+    set: jest.fn().mockResolvedValue('OK'), // default: NX succeeds (new request)
+    get: jest.fn(),
+    del: jest.fn().mockResolvedValue(1),
+  };
+}
+
+async function createTestService(
+  mockDb: ReturnType<typeof createMockDb>,
+  mockRedis?: Record<string, jest.Mock>,
+) {
+  const redis = mockRedis ?? createMockRedis();
   const module = await Test.createTestingModule({
     providers: [
       PurchasesService,
       { provide: DB, useValue: mockDb },
       { provide: 'PLATFORM_WALLET_ID', useValue: 'platform-wallet-id' },
+      { provide: REDIS_CLIENT, useValue: redis },
     ],
   }).compile();
 
   return module.get(PurchasesService);
 }
 
-describe('PurchasesService — royalty calculation', () => {
-  it('gives author floor(price * 70 / 100) and platform the remainder', () => {
+describe('PurchasesService — centi-cent accrual', () => {
+  it('gives author floor + 0 sweep when accrual stays below 100 centi-cents', () => {
     const price = 99;
-    const authorCut = Math.floor((price * 70) / 100);
-    const platformCut = price - authorCut;
-    expect(authorCut).toBe(69);
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 0;
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 6930
+    const authorFloorCents = Math.floor(exactNumerator / 100); // 69
+    const remainderCentiCents = exactNumerator % 100; // 30
+    const newFractional = fractionalBalance + remainderCentiCents; // 30
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 0
+    const leftoverCenti = newFractional % CENTI_CENTS; // 30
+    const totalAuthorCents = authorFloorCents + sweepCents; // 69
+    const platformCut = price - totalAuthorCents; // 30
+
+    expect(totalAuthorCents).toBe(69);
     expect(platformCut).toBe(30);
-    expect(authorCut + platformCut).toBe(price);
+    expect(totalAuthorCents + platformCut).toBe(price);
+    expect(leftoverCenti).toBe(30);
   });
 
-  it('is exact on round numbers', () => {
+  it('sweeps 1 cent when accumulated centi-cents cross 100', () => {
+    const price = 99;
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 80; // author already has 80 centi-cents
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 6930
+    const authorFloorCents = Math.floor(exactNumerator / 100); // 69
+    const remainderCentiCents = exactNumerator % 100; // 30
+    const newFractional = fractionalBalance + remainderCentiCents; // 110
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 1
+    const leftoverCenti = newFractional % CENTI_CENTS; // 10
+    const totalAuthorCents = authorFloorCents + sweepCents; // 70
+    const platformCut = price - totalAuthorCents; // 29
+
+    expect(totalAuthorCents).toBe(70);
+    expect(platformCut).toBe(29);
+    expect(totalAuthorCents + platformCut).toBe(price);
+    expect(leftoverCenti).toBe(10);
+  });
+
+  it('produces zero royalty_author cents for itemPrice=1 with no accumulated accrual', () => {
+    const price = 1;
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 0;
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 70
+    const authorFloorCents = Math.floor(exactNumerator / CENTI_CENTS); // 0
+    const remainderCentiCents = exactNumerator % CENTI_CENTS; // 70
+    const newFractional = fractionalBalance + remainderCentiCents; // 70
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 0
+    const leftoverCenti = newFractional % CENTI_CENTS; // 70
+    const totalAuthorCents = authorFloorCents + sweepCents; // 0
+    const platformCut = price - totalAuthorCents; // 1
+
+    expect(totalAuthorCents).toBe(0); // no cents owed to author yet
+    expect(platformCut).toBe(1);
+    expect(totalAuthorCents + platformCut).toBe(price);
+    expect(leftoverCenti).toBe(70); // accrued — will be swept later
+  });
+
+  it('has zero remainder on round amounts', () => {
     const price = 100;
-    const authorCut = Math.floor((price * 70) / 100);
-    const platformCut = price - authorCut;
-    expect(authorCut).toBe(70);
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 0;
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 7000
+    const authorFloorCents = Math.floor(exactNumerator / 100); // 70
+    const remainderCentiCents = exactNumerator % 100; // 0
+    const newFractional = fractionalBalance + remainderCentiCents; // 0
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 0
+    const leftoverCenti = newFractional % CENTI_CENTS; // 0
+    const totalAuthorCents = authorFloorCents + sweepCents; // 70
+    const platformCut = price - totalAuthorCents; // 30
+
+    expect(totalAuthorCents).toBe(70);
     expect(platformCut).toBe(30);
+    expect(leftoverCenti).toBe(0);
   });
 });
 
@@ -301,5 +383,484 @@ describe('PurchasesService — concurrent duplicate key (DrizzleQueryError wrapp
         requestUserId: 'user-1',
       }),
     ).rejects.toThrow(ConflictException);
+  });
+});
+
+describe('PurchasesService — happy path accrual integration', () => {
+  let service: PurchasesService;
+  let mockDb: ReturnType<typeof createMockDb>;
+  let mockTx: ReturnType<typeof createMockTx>;
+
+  beforeEach(async () => {
+    mockTx = createMockTx();
+    mockDb = createMockDb(mockTx);
+    mockDb.where.mockResolvedValue([]); // no existing purchase
+    service = await createTestService(mockDb);
+  });
+
+  it('sets fractionalBalance to leftover centi-cents in the author wallet update', async () => {
+    // author has 80 centi-cents; itemPrice=99 adds 30 centi-cents => 110 => sweep 1, leftover 10
+    mockTx.for.mockResolvedValue([
+      {
+        id: 'wallet-buyer',
+        userId: 'user-1',
+        balance: 5000,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'wallet-author',
+        userId: 'author-user',
+        balance: 0,
+        fractionalBalance: 80,
+      },
+      {
+        id: 'platform-wallet-id',
+        userId: 'platform-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+    ]);
+    mockTx.returning.mockResolvedValueOnce([
+      {
+        id: 'purchase-1',
+        idempotencyKey: 'key-1',
+        status: 'completed',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 99,
+        createdAt: new Date(),
+      },
+    ]);
+
+    await service.purchase({
+      idempotencyKey: 'key-1',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 99,
+      requestUserId: 'user-1',
+    });
+
+    // set calls: [0] buyer, [1] author (has fractionalBalance), [2] platform
+    const authorSetArgs = mockTx.set.mock.calls[1][0];
+    expect(authorSetArgs.fractionalBalance).toBe(10);
+  });
+
+  it('upserts ledger_totals for purchase, royalty_author, and royalty_platform', async () => {
+    mockTx.for.mockResolvedValue([
+      {
+        id: 'wallet-buyer',
+        userId: 'user-1',
+        balance: 5000,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'wallet-author',
+        userId: 'author-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'platform-wallet-id',
+        userId: 'platform-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+    ]);
+    mockTx.returning.mockResolvedValueOnce([
+      {
+        id: 'purchase-1',
+        idempotencyKey: 'key-1',
+        status: 'completed',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 1000,
+        createdAt: new Date(),
+      },
+    ]);
+
+    await service.purchase({
+      idempotencyKey: 'key-1',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 1000,
+      requestUserId: 'user-1',
+    });
+
+    // ledger_totals upserts: insert called with schema.ledgerTotals for each of 3 types
+    const insertCalls = mockTx.insert.mock.calls.map((c: unknown[]) => c[0]);
+    expect(
+      insertCalls.filter((t: unknown) => t === schema.ledgerTotals),
+    ).toHaveLength(3);
+  });
+});
+
+describe('PurchasesService — Redis idempotency cache', () => {
+  // Use a fixed ISO string so JSON.stringify → JSON.parse → new Date() is deterministic
+  const createdAtIso = new Date('2026-01-01T00:00:00.000Z').toISOString();
+  const cachedPurchaseJson = {
+    id: 'purchase-1',
+    idempotencyKey: 'key-1',
+    status: 'completed' as const,
+    buyerWalletId: 'wallet-buyer',
+    authorWalletId: 'wallet-author',
+    itemPrice: 1000,
+    createdAt: createdAtIso,
+  };
+  // The service re-hydrates createdAt to a Date when returning from cache
+  const cachedPurchase = {
+    ...cachedPurchaseJson,
+    createdAt: new Date(createdAtIso),
+  };
+
+  const purchaseDto = {
+    idempotencyKey: 'key-1',
+    buyerWalletId: 'wallet-buyer',
+    authorWalletId: 'wallet-author',
+    itemPrice: 1000,
+    requestUserId: 'user-1',
+  };
+
+  it('Redis hit — returns cached purchase (happy path)', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns null — key already exists
+    mockRedis.set.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue(JSON.stringify(cachedPurchaseJson));
+    // Ownership check — buyer wallet belongs to user-1
+    mockDb.where.mockResolvedValueOnce([{ userId: 'user-1' }]);
+
+    const service = await createTestService(mockDb, mockRedis);
+    const result = await service.purchase(purchaseDto);
+
+    expect(result).toEqual(cachedPurchase);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it('Redis "processing" → 409 Conflict', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    mockRedis.set.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue('processing');
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ConflictException,
+    );
+  });
+
+  it('Redis null after GET (eviction race) → falls through to DB', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns null — key exists, but GET also returns null (evicted)
+    mockRedis.set.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue(null);
+    // DB idempotency check: no existing purchase
+    mockDb.where.mockResolvedValue([]);
+    // Transaction throws stub to keep test short
+    mockDb.transaction = jest.fn().mockRejectedValue(new Error('stub'));
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow('stub');
+    expect(mockDb.transaction).toHaveBeenCalled();
+  });
+
+  it('Redis unavailable → falls through to DB', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    mockRedis.set.mockRejectedValue(new Error('Redis connection refused'));
+    // DB idempotency check: no existing purchase
+    mockDb.where.mockResolvedValue([]);
+    // Transaction stub
+    mockDb.transaction = jest.fn().mockRejectedValue(new Error('stub'));
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow('stub');
+    expect(mockDb.from).toHaveBeenCalled(); // DB was consulted
+  });
+
+  it('Redis cache payload drift → 409 Conflict', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    const driftedPurchase = { ...cachedPurchaseJson, itemPrice: 999 };
+    mockRedis.set.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue(JSON.stringify(driftedPurchase));
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      new ConflictException(
+        'Idempotency key already used with different purchase parameters',
+      ),
+    );
+  });
+
+  it('Redis cache ownership check → 403 Forbidden', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    mockRedis.set.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue(JSON.stringify(cachedPurchaseJson));
+    // Ownership check — buyer wallet belongs to other-user
+    mockDb.where.mockResolvedValueOnce([{ userId: 'other-user' }]);
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ForbiddenException,
+    );
+  });
+
+  it('deletes owned sentinel when DB idempotency check throws ConflictException before transaction', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns 'OK' — this request set the sentinel
+    mockRedis.set.mockResolvedValue('OK');
+    // DB idempotency check: existing completed purchase with different payload → payload drift
+    mockDb.where.mockResolvedValueOnce([
+      {
+        id: 'purchase-1',
+        idempotencyKey: 'key-1',
+        status: 'completed',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 999, // differs from purchaseDto.itemPrice (1000) → drift
+      },
+    ]);
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ConflictException,
+    );
+    // Sentinel must be cleaned up even though the throw happened before the transaction
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
+  });
+
+  it('does NOT delete sentinel when this request did not set it (NX=null, eviction race, DB conflict)', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns null — another request's sentinel exists; eviction race: GET returns null
+    mockRedis.set.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue(null);
+    // DB idempotency check: finds pending purchase
+    mockDb.where.mockResolvedValueOnce([
+      { id: 'p-1', idempotencyKey: 'key-1', status: 'pending' },
+    ]);
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ConflictException,
+    );
+    // We did NOT set the sentinel — must not del it
+    expect(mockRedis.del).not.toHaveBeenCalled();
+  });
+
+  it('does NOT delete sentinel on PG_UNIQUE_VIOLATION (concurrent winner may have cached result)', async () => {
+    const pgError = Object.assign(new PostgresError('duplicate key'), {
+      code: '23505',
+      severity_local: 'ERROR',
+      severity: 'ERROR',
+    });
+    const drizzleQueryError = Object.assign(
+      new Error('Failed query: insert...'),
+      { cause: pgError },
+    );
+
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    mockDb.where.mockResolvedValue([]); // no existing purchase
+    mockDb.transaction = jest.fn().mockRejectedValue(drizzleQueryError);
+
+    const mockRedis = createMockRedis();
+    mockRedis.set.mockResolvedValue('OK'); // this request set the sentinel
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ConflictException,
+    );
+    // The concurrent winner may have already set the cached result — do NOT del
+    expect(mockRedis.del).not.toHaveBeenCalled();
+  });
+
+  it('clears the processing sentinel when the transaction fails', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns 'OK' — new request, sentinel is set
+    mockRedis.set.mockResolvedValue('OK');
+    // DB idempotency check: no existing purchase
+    mockDb.where.mockResolvedValue([]);
+    // Transaction throws a non-PG error (e.g., insufficient funds)
+    mockDb.transaction = jest
+      .fn()
+      .mockRejectedValue(new BadRequestException('Insufficient funds'));
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      BadRequestException,
+    );
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
+  });
+
+  it('Successful purchase populates Redis cache', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns OK — new request
+    mockRedis.set.mockResolvedValue('OK');
+    // DB idempotency check: no existing purchase
+    mockDb.where.mockResolvedValue([]);
+
+    const purchase = {
+      id: 'purchase-1',
+      idempotencyKey: 'key-1',
+      status: 'completed',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 1000,
+      createdAt: new Date(),
+    };
+
+    mockTx.for.mockResolvedValue([
+      {
+        id: 'wallet-buyer',
+        userId: 'user-1',
+        balance: 5000,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'wallet-author',
+        userId: 'author-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'platform-wallet-id',
+        userId: 'platform-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+    ]);
+    mockTx.returning.mockResolvedValueOnce([purchase]);
+
+    const service = await createTestService(mockDb, mockRedis);
+    const result = await service.purchase(purchaseDto);
+
+    expect(result).toEqual(purchase);
+    // Second redis.set call should cache the purchase result
+    expect(mockRedis.set).toHaveBeenCalledTimes(2);
+    const secondCall = mockRedis.set.mock.calls[1];
+    expect(secondCall[0]).toBe('idempotency:key-1');
+    expect(secondCall[1]).toBe(JSON.stringify(purchase));
+    expect(secondCall[2]).toBe('EX');
+    expect(secondCall[3]).toBe(86400);
+  });
+
+  it('deletes owned sentinel when post-commit cache write fails', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // First set: NX sentinel → OK; second set: post-commit cache write → fails
+    mockRedis.set.mockResolvedValueOnce('OK');
+    mockRedis.set.mockRejectedValueOnce(new Error('Redis down'));
+    // DB idempotency check: no existing purchase
+    mockDb.where.mockResolvedValue([]);
+
+    const purchase = {
+      id: 'purchase-1',
+      idempotencyKey: 'key-1',
+      status: 'completed',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 1000,
+      createdAt: new Date(),
+    };
+
+    mockTx.for.mockResolvedValue([
+      {
+        id: 'wallet-buyer',
+        userId: 'user-1',
+        balance: 5000,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'wallet-author',
+        userId: 'author-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'platform-wallet-id',
+        userId: 'platform-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+    ]);
+    mockTx.returning.mockResolvedValueOnce([purchase]);
+
+    const service = await createTestService(mockDb, mockRedis);
+    const result = await service.purchase(purchaseDto);
+
+    // Purchase still returned — commit succeeded
+    expect(result).toEqual(purchase);
+    // Sentinel must be deleted so retries fall through to DB rather than getting stale 409
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
+  });
+
+  it('deletes owned sentinel when DB cold-start cache write fails', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // First set: NX sentinel → OK; second set: cold-start cache write → fails
+    mockRedis.set.mockResolvedValueOnce('OK');
+    mockRedis.set.mockRejectedValueOnce(new Error('Redis down'));
+    // DB idempotency check: finds existing completed purchase
+    mockDb.where
+      .mockResolvedValueOnce([
+        {
+          id: 'purchase-1',
+          idempotencyKey: 'key-1',
+          status: 'completed',
+          buyerWalletId: 'wallet-buyer',
+          authorWalletId: 'wallet-author',
+          itemPrice: 1000,
+          createdAt: new Date(),
+        },
+      ])
+      // Ownership check: wallet belongs to the requesting user
+      .mockResolvedValueOnce([{ userId: 'user-1' }]);
+
+    const service = await createTestService(mockDb, mockRedis);
+    const existing = await service.purchase(purchaseDto);
+
+    // Result returned normally — DB path succeeded
+    expect(existing).toBeDefined();
+    // Sentinel must be deleted so retries fall through to DB rather than getting stale 409
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
   });
 });

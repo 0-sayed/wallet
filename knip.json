@@ -2,11 +2,10 @@
   "entry": [
     "src/main.ts",
     "test/**/*.e2e-spec.ts",
-    "src/common/database/db.module.ts"
+    "src/common/database/db.module.ts",
+    "src/common/redis/redis.module.ts"
   ],
   "ignoreDependencies": [
-    "@nestjs/bullmq",
-    "bullmq",
     "@eslint/eslintrc",
     "pino-pretty",
     "source-map-support",

@@ -24,3 +24,7 @@ The only special case is royalty splits where division produces remainders (e.g.
 - All monetary values are integers in the codebase — no decimal types anywhere
 - API accepts and returns cent values (documented in API contract)
 - Division for royalty splits requires explicit rounding strategy (see ADR-005)
+
+## Addendum (2026-04-12)
+
+Centi-cents (1/100 of a cent, stored as `wallets.fractional_balance`) extend this principle for sub-cent royalty accrual. See ADR-010.

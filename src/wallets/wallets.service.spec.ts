@@ -2,11 +2,13 @@ import { Test } from '@nestjs/testing';
 import { WalletsService } from './wallets.service';
 import { DB } from '../common/database/db.module';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import * as schema from '../common/database/schema';
 
 const mockWallet = {
   id: 'wallet-1',
   userId: 'user-1',
   balance: 5000,
+  fractionalBalance: 0,
   updatedAt: new Date(),
 };
 
@@ -32,7 +34,9 @@ function makeTx(
       }),
     }),
     insert: jest.fn().mockReturnValue({
-      values: jest.fn().mockResolvedValue(undefined),
+      values: jest.fn().mockReturnValue({
+        onConflictDoUpdate: jest.fn().mockResolvedValue(undefined),
+      }),
     }),
   };
 }
@@ -87,6 +91,24 @@ describe('WalletsService', () => {
       const result = await service.deposit('user-1', 'wallet-1', 100);
       expect(result.balance).toBe(5100);
       expect(tx.insert).toHaveBeenCalled();
+    });
+
+    it('updates ledger_totals for deposit within the same transaction', async () => {
+      const updatedWallet = { ...mockWallet, balance: 5100 };
+      const tx = makeTx({
+        selectResult: [mockWallet],
+        updateResult: [updatedWallet],
+      });
+      mockDb.transaction.mockImplementation((cb: (tx: MockTx) => unknown) =>
+        cb(tx),
+      );
+
+      await service.deposit('user-1', 'wallet-1', 100);
+
+      // update: wallet balance only. insert: ledger entry + ledger_totals upsert.
+      expect(tx.update).toHaveBeenCalledTimes(1);
+      expect(tx.insert).toHaveBeenCalledTimes(2);
+      expect(tx.insert).toHaveBeenNthCalledWith(2, schema.ledgerTotals);
     });
   });
 });

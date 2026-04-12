@@ -2,7 +2,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { eq, sum } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import type { AppDatabase } from '../common/database/db.module';
 import { DB } from '../common/database/db.module';
 import * as schema from '../common/database/schema';
@@ -56,28 +56,20 @@ export class ReportsProcessor extends WorkerHost {
     }
   }
 
-  // Single GROUP BY query inside a repeatable-read transaction so all sums
-  // reflect a consistent ledger snapshot in one round-trip.
+  // O(1) read from ledger_totals (maintained by triggers) inside a
+  // repeatable-read transaction for a consistent snapshot.
   private async aggregate() {
     return this.db.transaction(
       async (tx) => {
-        const rows = await tx
-          .select({
-            type: schema.ledger.type,
-            total: sum(schema.ledger.amount),
-          })
-          .from(schema.ledger)
-          .groupBy(schema.ledger.type);
+        const rows = await tx.select().from(schema.ledgerTotals);
 
-        const byType = Object.fromEntries(
-          rows.map((r) => [r.type, r.total ?? '0']),
-        );
+        const byType = Object.fromEntries(rows.map((r) => [r.type, r.total]));
 
         return {
-          totalDeposited: byType['deposit'] ?? '0',
-          totalPurchaseVolume: byType['purchase'] ?? '0',
-          totalRoyaltiesPaid: byType['royalty_author'] ?? '0',
-          platformRevenue: byType['royalty_platform'] ?? '0',
+          totalDeposited: byType['deposit'] ?? 0,
+          totalPurchaseVolume: byType['purchase'] ?? 0,
+          totalRoyaltiesPaid: byType['royalty_author'] ?? 0,
+          platformRevenue: byType['royalty_platform'] ?? 0,
           generatedAt: new Date().toISOString(),
         };
       },

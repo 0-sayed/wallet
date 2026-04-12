@@ -10,7 +10,8 @@ Wallet is a digital wallet API that manages integer-cent balances, purchase tran
 graph LR
     Client -->|HTTP| API[NestJS API :3000]
     API -->|Drizzle ORM| PG[(PostgreSQL 16)]
-    API -->|BullMQ| Redis[(Redis 7)]
+    API -->|ioredis - idempotency cache| Redis[(Redis 7)]
+    API -->|BullMQ| Redis
     Redis -->|Job| Worker[Report Processor]
     Worker -->|Drizzle ORM| PG
 ```
@@ -84,6 +85,13 @@ erDiagram
         jsonb result
         timestamp completed_at
     }
+
+    ledger_totals {
+        enum type PK "ledger_type"
+        bigint total "running sum"
+    }
+
+    ledger ||--o{ ledger_totals : "aggregated into"
 ```
 
 ## Concurrency & Transactions
@@ -97,17 +105,26 @@ Each deposit runs inside a transaction that locks the wallet row with `SELECT FO
 A purchase involves three wallets: buyer, author, and platform. All three are locked in a single query ordered by `id ASC` (`FOR UPDATE`) to enforce consistent lock acquisition and prevent deadlocks. Within the same transaction:
 
 1. Buyer balance is decremented by the item price
-2. Author receives `floor(price * 70 / 100)` (author royalty)
-3. Platform receives the remainder (`price - authorCut`)
+2. Author receives floor royalty plus any accrued centi-cents that crossed 100 (see ADR-010)
+3. Platform receives the remainder (`price - totalAuthorCents`)
 4. A purchase record and three ledger entries are inserted
 
 If PostgreSQL detects a deadlock (`40P01`), the service catches it and returns `409 Conflict` with a retry hint.
 
 ### Idempotency
 
-Each purchase carries a client-owned `Idempotency-Key` header (UUID). Before entering the transaction, the service checks for an existing purchase with that key:
+Each purchase carries a client-owned `Idempotency-Key` header (UUID). Before entering the transaction, the service checks a Redis edge cache then the database:
 
-- **Completed + same payload** — returns the cached result (safe replay)
+**Redis SETNX (fast path):** `SET idempotency:<key> 'processing' EX 86400 NX`
+
+- NX returns `null` (key exists): read cached value — return completed purchase or `409`
+- NX returns `'OK'` (new request): proceed to DB check below
+- Redis unavailable: log warning, fall through to DB (degraded but not broken)
+- Transaction failure: sentinel is deleted so clients can retry
+
+**DB check (cold-start / Redis miss):**
+
+- **Completed + same payload** — populate Redis, return cached result (safe replay)
 - **Completed + different payload** — `409 Conflict` (payload drift)
 - **Still in flight** — `409 Conflict`
 
@@ -118,7 +135,7 @@ The `idempotency_key` column has a unique constraint — concurrent inserts with
 Financial reports are generated asynchronously:
 
 1. `POST /reports/financial` — inserts a report row with status `queued`, enqueues a BullMQ job, returns `{ jobId, status }`
-2. **ReportsProcessor** (BullMQ worker) picks up the job, sets status to `processing`, runs an aggregation query inside a `REPEATABLE READ` transaction, and stores the JSONB result
+2. **ReportsProcessor** (BullMQ worker) picks up the job, sets status to `processing`, reads pre-aggregated totals from `ledger_totals` (O(1), no table scan), and stores the JSONB result
 3. `GET /reports/financial/:jobId` — polls the report status and result, scoped to the requesting user
 
 If Redis is down when enqueuing, the report is immediately marked `failed` rather than left orphaned in `queued`.
@@ -134,6 +151,9 @@ Architectural decisions are recorded as ADRs:
 - [ADR-005: Platform Receives Royalty Remainder](adr/ADR-005-platform-royalty-remainder.md)
 - [ADR-006: BullMQ for Async Report Generation](adr/ADR-006-bullmq-async-reports.md)
 - [ADR-007: Idempotency Key Owned by Client](adr/ADR-007-client-owned-idempotency-key.md)
+- [ADR-008: Running Totals for Reporting](adr/ADR-008-running-totals-for-reporting.md)
+- [ADR-009: Redis Idempotency Cache](adr/ADR-009-redis-idempotency-cache.md)
+- [ADR-010: Centi-cent Fractional Accrual](adr/ADR-010-centi-cent-fractional-accrual.md)
 
 ## Security
 

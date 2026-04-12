@@ -61,6 +61,15 @@ export class WalletsService {
         amount,
       });
 
+      // Update running total — upsert ensures correctness even on fresh databases
+      await tx
+        .insert(schema.ledgerTotals)
+        .values({ type: 'deposit', total: amount })
+        .onConflictDoUpdate({
+          target: schema.ledgerTotals.type,
+          set: { total: sql`${schema.ledgerTotals.total} + ${amount}` },
+        });
+
       return updated;
     });
   }

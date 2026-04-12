@@ -3,6 +3,7 @@ import {
   uuid,
   text,
   integer,
+  bigint,
   timestamp,
   pgEnum,
   uniqueIndex,
@@ -50,6 +51,7 @@ export const wallets = pgTable(
       .references(() => users.id)
       .notNull(),
     balance: integer('balance').notNull().default(0),
+    fractionalBalance: integer('fractional_balance').notNull().default(0),
     updatedAt: timestamp('updated_at')
       .defaultNow()
       .notNull()
@@ -58,6 +60,14 @@ export const wallets = pgTable(
   (table) => [
     uniqueIndex('wallets_user_id_idx').on(table.userId),
     check('wallets_balance_non_negative', sql`${table.balance} >= 0`),
+    check(
+      'wallets_fractional_balance_non_negative',
+      sql`${table.fractionalBalance} >= 0`,
+    ),
+    check(
+      'wallets_fractional_balance_lt_100',
+      sql`${table.fractionalBalance} < 100`,
+    ),
   ],
 );
 
@@ -107,4 +117,10 @@ export const reports = pgTable('reports', {
     .notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   completedAt: timestamp('completed_at'),
+});
+
+export const ledgerTotals = pgTable('ledger_totals', {
+  type: ledgerTypeEnum('type').primaryKey(),
+  // mode:'number' is safe: max expected total ~100B << Number.MAX_SAFE_INTEGER (~9e15)
+  total: bigint('total', { mode: 'number' }).notNull().default(0),
 });
