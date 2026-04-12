@@ -3,6 +3,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { Job } from 'bullmq';
 import { ReportsProcessor } from './reports.processor';
 import { DB } from '../common/database/db.module';
+import * as schema from '../common/database/schema';
 
 describe('ReportsProcessor', () => {
   let processor: ReportsProcessor;
@@ -53,6 +54,7 @@ describe('ReportsProcessor', () => {
       generatedAt: expect.any(String),
     });
     // groupBy must not have been called — we no longer scan the ledger
+    expect(mockDb.from).toHaveBeenCalledWith(schema.ledgerTotals);
     expect(mockDb.groupBy).toBeUndefined();
   });
 
