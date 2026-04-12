@@ -15,6 +15,7 @@ import { DB } from '../common/database/db.module';
 import * as schema from '../common/database/schema';
 
 const AUTHOR_ROYALTY_PERCENT = 70;
+const CENTI_CENTS = 100;
 const PG_UNIQUE_VIOLATION = '23505';
 const PG_DEADLOCK = '40P01';
 
@@ -102,6 +103,7 @@ export class PurchasesService {
             id: schema.wallets.id,
             userId: schema.wallets.userId,
             balance: schema.wallets.balance,
+            fractionalBalance: schema.wallets.fractionalBalance,
           })
           .from(schema.wallets)
           .where(inArray(schema.wallets.id, walletIds))
@@ -142,10 +144,18 @@ export class PurchasesService {
           throw new BadRequestException('Platform wallet does not exist');
         }
 
-        const authorCut = Math.floor(
-          (dto.itemPrice * AUTHOR_ROYALTY_PERCENT) / 100,
-        );
-        const platformCut = dto.itemPrice - authorCut;
+        // Centi-cent accrual — eliminates systematic author under-payment at scale
+        const exactNumerator = dto.itemPrice * AUTHOR_ROYALTY_PERCENT;
+        const authorFloorCents = Math.floor(exactNumerator / CENTI_CENTS);
+        const remainderCentiCents = exactNumerator % CENTI_CENTS;
+
+        const newFractional =
+          authorWallet.fractionalBalance + remainderCentiCents;
+        const sweepCents = Math.floor(newFractional / CENTI_CENTS);
+        const leftoverCenti = newFractional % CENTI_CENTS;
+
+        const totalAuthorCents = authorFloorCents + sweepCents;
+        const platformCut = dto.itemPrice - totalAuthorCents;
         const now = new Date();
 
         // Deduct from buyer
@@ -157,11 +167,12 @@ export class PurchasesService {
           })
           .where(eq(schema.wallets.id, dto.buyerWalletId));
 
-        // Credit author
+        // Credit author (with centi-cent sweep if accrual crossed 100)
         await tx
           .update(schema.wallets)
           .set({
-            balance: sql`${schema.wallets.balance} + ${authorCut}`,
+            balance: sql`${schema.wallets.balance} + ${totalAuthorCents}`,
+            fractionalBalance: leftoverCenti,
             updatedAt: now,
           })
           .where(eq(schema.wallets.id, dto.authorWalletId));
@@ -187,30 +198,34 @@ export class PurchasesService {
           })
           .returning();
 
-        // Ledger entries
-        await tx.insert(schema.ledger).values([
+        // Ledger entries — filter out zero-amount entries to satisfy CHECK (amount > 0)
+        const ledgerEntries = [
           {
             walletId: dto.buyerWalletId,
-            type: 'purchase',
-            direction: 'debit',
+            type: 'purchase' as const,
+            direction: 'debit' as const,
             amount: dto.itemPrice,
             purchaseId: purchase.id,
           },
           {
             walletId: dto.authorWalletId,
-            type: 'royalty_author',
-            direction: 'credit',
-            amount: authorCut,
+            type: 'royalty_author' as const,
+            direction: 'credit' as const,
+            amount: totalAuthorCents,
             purchaseId: purchase.id,
           },
           {
             walletId: this.platformWalletId,
-            type: 'royalty_platform',
-            direction: 'credit',
+            type: 'royalty_platform' as const,
+            direction: 'credit' as const,
             amount: platformCut,
             purchaseId: purchase.id,
           },
-        ]);
+        ].filter((e) => e.amount > 0);
+
+        if (ledgerEntries.length > 0) {
+          await tx.insert(schema.ledger).values(ledgerEntries);
+        }
 
         return purchase;
       });

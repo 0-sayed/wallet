@@ -45,22 +45,88 @@ async function createTestService(mockDb: ReturnType<typeof createMockDb>) {
   return module.get(PurchasesService);
 }
 
-describe('PurchasesService — royalty calculation', () => {
-  it('gives author floor(price * 70 / 100) and platform the remainder', () => {
+describe('PurchasesService — centi-cent accrual', () => {
+  it('gives author floor + 0 sweep when accrual stays below 100 centi-cents', () => {
     const price = 99;
-    const authorCut = Math.floor((price * 70) / 100);
-    const platformCut = price - authorCut;
-    expect(authorCut).toBe(69);
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 0;
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 6930
+    const authorFloorCents = Math.floor(exactNumerator / 100); // 69
+    const remainderCentiCents = exactNumerator % 100; // 30
+    const newFractional = fractionalBalance + remainderCentiCents; // 30
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 0
+    const leftoverCenti = newFractional % CENTI_CENTS; // 30
+    const totalAuthorCents = authorFloorCents + sweepCents; // 69
+    const platformCut = price - totalAuthorCents; // 30
+
+    expect(totalAuthorCents).toBe(69);
     expect(platformCut).toBe(30);
-    expect(authorCut + platformCut).toBe(price);
+    expect(totalAuthorCents + platformCut).toBe(price);
+    expect(leftoverCenti).toBe(30);
   });
 
-  it('is exact on round numbers', () => {
+  it('sweeps 1 cent when accumulated centi-cents cross 100', () => {
+    const price = 99;
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 80; // author already has 80 centi-cents
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 6930
+    const authorFloorCents = Math.floor(exactNumerator / 100); // 69
+    const remainderCentiCents = exactNumerator % 100; // 30
+    const newFractional = fractionalBalance + remainderCentiCents; // 110
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 1
+    const leftoverCenti = newFractional % CENTI_CENTS; // 10
+    const totalAuthorCents = authorFloorCents + sweepCents; // 70
+    const platformCut = price - totalAuthorCents; // 29
+
+    expect(totalAuthorCents).toBe(70);
+    expect(platformCut).toBe(29);
+    expect(totalAuthorCents + platformCut).toBe(price);
+    expect(leftoverCenti).toBe(10);
+  });
+
+  it('produces zero royalty_author cents for itemPrice=1 with no accumulated accrual', () => {
+    const price = 1;
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 0;
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 70
+    const authorFloorCents = Math.floor(exactNumerator / CENTI_CENTS); // 0
+    const remainderCentiCents = exactNumerator % CENTI_CENTS; // 70
+    const newFractional = fractionalBalance + remainderCentiCents; // 70
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 0
+    const leftoverCenti = newFractional % CENTI_CENTS; // 70
+    const totalAuthorCents = authorFloorCents + sweepCents; // 0
+    const platformCut = price - totalAuthorCents; // 1
+
+    expect(totalAuthorCents).toBe(0); // no cents owed to author yet
+    expect(platformCut).toBe(1);
+    expect(totalAuthorCents + platformCut).toBe(price);
+    expect(leftoverCenti).toBe(70); // accrued — will be swept later
+  });
+
+  it('has zero remainder on round amounts', () => {
     const price = 100;
-    const authorCut = Math.floor((price * 70) / 100);
-    const platformCut = price - authorCut;
-    expect(authorCut).toBe(70);
+    const AUTHOR_ROYALTY_PERCENT = 70;
+    const CENTI_CENTS = 100;
+    const fractionalBalance = 0;
+
+    const exactNumerator = price * AUTHOR_ROYALTY_PERCENT; // 7000
+    const authorFloorCents = Math.floor(exactNumerator / 100); // 70
+    const remainderCentiCents = exactNumerator % 100; // 0
+    const newFractional = fractionalBalance + remainderCentiCents; // 0
+    const sweepCents = Math.floor(newFractional / CENTI_CENTS); // 0
+    const leftoverCenti = newFractional % CENTI_CENTS; // 0
+    const totalAuthorCents = authorFloorCents + sweepCents; // 70
+    const platformCut = price - totalAuthorCents; // 30
+
+    expect(totalAuthorCents).toBe(70);
     expect(platformCut).toBe(30);
+    expect(leftoverCenti).toBe(0);
   });
 });
 
@@ -301,5 +367,65 @@ describe('PurchasesService — concurrent duplicate key (DrizzleQueryError wrapp
         requestUserId: 'user-1',
       }),
     ).rejects.toThrow(ConflictException);
+  });
+});
+
+describe('PurchasesService — happy path accrual integration', () => {
+  let service: PurchasesService;
+  let mockDb: ReturnType<typeof createMockDb>;
+  let mockTx: ReturnType<typeof createMockTx>;
+
+  beforeEach(async () => {
+    mockTx = createMockTx();
+    mockDb = createMockDb(mockTx);
+    mockDb.where.mockResolvedValue([]); // no existing purchase
+    service = await createTestService(mockDb);
+  });
+
+  it('sets fractionalBalance to leftover centi-cents in the author wallet update', async () => {
+    // author has 80 centi-cents; itemPrice=99 adds 30 centi-cents => 110 => sweep 1, leftover 10
+    mockTx.for.mockResolvedValue([
+      {
+        id: 'wallet-buyer',
+        userId: 'user-1',
+        balance: 5000,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'wallet-author',
+        userId: 'author-user',
+        balance: 0,
+        fractionalBalance: 80,
+      },
+      {
+        id: 'platform-wallet-id',
+        userId: 'platform-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+    ]);
+    mockTx.returning.mockResolvedValueOnce([
+      {
+        id: 'purchase-1',
+        idempotencyKey: 'key-1',
+        status: 'completed',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 99,
+        createdAt: new Date(),
+      },
+    ]);
+
+    await service.purchase({
+      idempotencyKey: 'key-1',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 99,
+      requestUserId: 'user-1',
+    });
+
+    // set calls: [0] buyer, [1] author (has fractionalBalance), [2] platform
+    const authorSetArgs = mockTx.set.mock.calls[1][0];
+    expect(authorSetArgs.fractionalBalance).toBe(10);
   });
 });
