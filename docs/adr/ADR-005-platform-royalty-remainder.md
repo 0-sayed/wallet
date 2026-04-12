@@ -1,7 +1,9 @@
 # ADR-005: Platform Receives Royalty Remainder
 
-**Status:** Accepted
+**Status:** Superseded by ADR-010
 **Date:** 2026-02-26
+
+> **Superseded:** This ADR describes the original floor-only rounding strategy. It has been replaced by ADR-010 (centi-cent accrual), which eliminates the systematic under-payment of authors. The platform still receives the remainder after sweep, but over time the amounts converge to the nominal 30%.
 
 ## Context
 
