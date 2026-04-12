@@ -2,6 +2,7 @@ import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { LoggerModule } from './common/logger/logger.module';
+import { RedisModule } from './common/redis/redis.module';
 import { DbModule } from './common/database/db.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { HealthController } from './health/health.controller';
@@ -28,6 +29,7 @@ import { ReportsModule } from './reports/reports.module';
       inject: [ConfigService],
     }),
     LoggerModule,
+    RedisModule,
     DbModule,
     PurchasesModule,
     WalletsModule,
