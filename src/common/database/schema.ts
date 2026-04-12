@@ -117,5 +117,6 @@ export const reports = pgTable('reports', {
 
 export const ledgerTotals = pgTable('ledger_totals', {
   type: ledgerTypeEnum('type').primaryKey(),
+  // mode:'number' is safe: max expected total ~100B << Number.MAX_SAFE_INTEGER (~9e15)
   total: bigint('total', { mode: 'number' }).notNull().default(0),
 });
