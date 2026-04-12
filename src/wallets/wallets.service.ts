@@ -61,11 +61,14 @@ export class WalletsService {
         amount,
       });
 
-      // Update running total — same transaction, always consistent
+      // Update running total — upsert ensures correctness even on fresh databases
       await tx
-        .update(schema.ledgerTotals)
-        .set({ total: sql`${schema.ledgerTotals.total} + ${amount}` })
-        .where(eq(schema.ledgerTotals.type, 'deposit'));
+        .insert(schema.ledgerTotals)
+        .values({ type: 'deposit', total: amount })
+        .onConflictDoUpdate({
+          target: schema.ledgerTotals.type,
+          set: { total: sql`${schema.ledgerTotals.total} + ${amount}` },
+        });
 
       return updated;
     });

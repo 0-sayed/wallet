@@ -8,6 +8,7 @@ const mockWallet = {
   id: 'wallet-1',
   userId: 'user-1',
   balance: 5000,
+  fractionalBalance: 0,
   updatedAt: new Date(),
 };
 
@@ -33,7 +34,9 @@ function makeTx(
       }),
     }),
     insert: jest.fn().mockReturnValue({
-      values: jest.fn().mockResolvedValue(undefined),
+      values: jest.fn().mockReturnValue({
+        onConflictDoUpdate: jest.fn().mockResolvedValue(undefined),
+      }),
     }),
   };
 }
@@ -102,9 +105,10 @@ describe('WalletsService', () => {
 
       await service.deposit('user-1', 'wallet-1', 100);
 
-      // First update: wallet balance. Second update: ledger_totals.
-      expect(tx.update).toHaveBeenCalledTimes(2);
-      expect(tx.update).toHaveBeenNthCalledWith(2, schema.ledgerTotals);
+      // update: wallet balance only. insert: ledger entry + ledger_totals upsert.
+      expect(tx.update).toHaveBeenCalledTimes(1);
+      expect(tx.insert).toHaveBeenCalledTimes(2);
+      expect(tx.insert).toHaveBeenNthCalledWith(2, schema.ledgerTotals);
     });
   });
 });
