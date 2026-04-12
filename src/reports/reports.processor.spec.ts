@@ -22,6 +22,7 @@ describe('ReportsProcessor', () => {
       select: jest.fn().mockReturnThis(),
       from: jest.fn().mockReturnThis(),
       where: jest.fn().mockReturnThis(),
+      groupBy: jest.fn().mockReturnThis(),
       update: jest.fn().mockReturnThis(),
       set: jest.fn().mockReturnThis(),
       transaction: jest.fn((cb) => cb(mockDb)),
@@ -55,7 +56,7 @@ describe('ReportsProcessor', () => {
     });
     // groupBy must not have been called — we no longer scan the ledger
     expect(mockDb.from).toHaveBeenCalledWith(schema.ledgerTotals);
-    expect(mockDb.groupBy).toBeUndefined();
+    expect(mockDb.groupBy).not.toHaveBeenCalled();
   });
 
   it('transitions report from queued to processing to completed with payload', async () => {

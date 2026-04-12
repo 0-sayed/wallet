@@ -73,45 +73,60 @@ export class PurchasesService {
 
         if (cached !== null) {
           // cached is a JSON-serialized purchase result
-          const parsed = JSON.parse(cached) as {
-            id: string;
-            idempotencyKey: string;
-            status: 'pending' | 'completed' | 'failed';
-            buyerWalletId: string;
-            authorWalletId: string;
-            itemPrice: number;
-            createdAt: string;
-          };
-          // Re-hydrate createdAt to a Date to match the DB return shape
-          const cachedPurchase = {
-            ...parsed,
-            createdAt: new Date(parsed.createdAt),
-          };
-
-          // Payload drift check
-          if (
-            cachedPurchase.buyerWalletId !== dto.buyerWalletId ||
-            cachedPurchase.authorWalletId !== dto.authorWalletId ||
-            cachedPurchase.itemPrice !== dto.itemPrice
-          ) {
-            throw new ConflictException(
-              'Idempotency key already used with different purchase parameters',
+          let parsed:
+            | {
+                id: string;
+                idempotencyKey: string;
+                status: 'pending' | 'completed' | 'failed';
+                buyerWalletId: string;
+                authorWalletId: string;
+                itemPrice: number;
+                createdAt: string;
+              }
+            | undefined;
+          try {
+            parsed = JSON.parse(cached) as typeof parsed;
+          } catch {
+            // Malformed cache value — fall through to DB path
+            this.logger.warn(
+              { key: redisKey },
+              'Malformed Redis cache value, falling through to DB path',
             );
           }
 
-          // Ownership check (same as DB path)
-          const [buyerWallet] = await this.db
-            .select({ userId: schema.wallets.userId })
-            .from(schema.wallets)
-            .where(eq(schema.wallets.id, cachedPurchase.buyerWalletId));
+          if (parsed !== undefined) {
+            // Re-hydrate createdAt to a Date to match the DB return shape
+            const cachedPurchase = {
+              ...parsed,
+              createdAt: new Date(parsed.createdAt),
+            };
 
-          if (!buyerWallet || buyerWallet.userId !== dto.requestUserId) {
-            throw new ForbiddenException(
-              'Buyer wallet does not belong to the authenticated user',
-            );
+            // Payload drift check
+            if (
+              cachedPurchase.buyerWalletId !== dto.buyerWalletId ||
+              cachedPurchase.authorWalletId !== dto.authorWalletId ||
+              cachedPurchase.itemPrice !== dto.itemPrice
+            ) {
+              throw new ConflictException(
+                'Idempotency key already used with different purchase parameters',
+              );
+            }
+
+            // Ownership check (same as DB path)
+            const [buyerWallet] = await this.db
+              .select({ userId: schema.wallets.userId })
+              .from(schema.wallets)
+              .where(eq(schema.wallets.id, cachedPurchase.buyerWalletId));
+
+            if (!buyerWallet || buyerWallet.userId !== dto.requestUserId) {
+              throw new ForbiddenException(
+                'Buyer wallet does not belong to the authenticated user',
+              );
+            }
+
+            return cachedPurchase;
           }
-
-          return cachedPurchase;
+          // parsed === undefined: malformed JSON — fall through to DB path
         }
 
         // cached === null: key was evicted between NX check and GET (eviction race)
@@ -277,14 +292,17 @@ export class PurchasesService {
           })
           .where(eq(schema.wallets.id, dto.authorWalletId));
 
-        // Credit platform
-        await tx
-          .update(schema.wallets)
-          .set({
-            balance: sql`${schema.wallets.balance} + ${platformCut}`,
-            updatedAt: now,
-          })
-          .where(eq(schema.wallets.id, this.platformWalletId));
+        // Credit platform (only when platform receives something — platformCut is 0
+        // when totalAuthorCents equals itemPrice, which requires a full centi-cent sweep)
+        if (platformCut > 0) {
+          await tx
+            .update(schema.wallets)
+            .set({
+              balance: sql`${schema.wallets.balance} + ${platformCut}`,
+              updatedAt: now,
+            })
+            .where(eq(schema.wallets.id, this.platformWalletId));
+        }
 
         // Record purchase
         const [purchase] = await tx
@@ -327,7 +345,9 @@ export class PurchasesService {
           await tx.insert(schema.ledger).values(ledgerEntries);
         }
 
-        // Update running totals — same transaction, always consistent
+        // Update running totals — same transaction, always consistent.
+        // Mirror the ledger entry filter: only upsert when money actually moved,
+        // keeping ledger_totals.total in sync with the sum of actual ledger entries.
         await tx
           .insert(schema.ledgerTotals)
           .values({ type: 'purchase', total: dto.itemPrice })
@@ -337,27 +357,36 @@ export class PurchasesService {
               total: sql`${schema.ledgerTotals.total} + ${dto.itemPrice}`,
             },
           });
-        await tx
-          .insert(schema.ledgerTotals)
-          .values({ type: 'royalty_author', total: totalAuthorCents })
-          .onConflictDoUpdate({
-            target: schema.ledgerTotals.type,
-            set: {
-              total: sql`${schema.ledgerTotals.total} + ${totalAuthorCents}`,
-            },
-          });
-        await tx
-          .insert(schema.ledgerTotals)
-          .values({ type: 'royalty_platform', total: platformCut })
-          .onConflictDoUpdate({
-            target: schema.ledgerTotals.type,
-            set: { total: sql`${schema.ledgerTotals.total} + ${platformCut}` },
-          });
+        if (totalAuthorCents > 0) {
+          await tx
+            .insert(schema.ledgerTotals)
+            .values({ type: 'royalty_author', total: totalAuthorCents })
+            .onConflictDoUpdate({
+              target: schema.ledgerTotals.type,
+              set: {
+                total: sql`${schema.ledgerTotals.total} + ${totalAuthorCents}`,
+              },
+            });
+        }
+        if (platformCut > 0) {
+          await tx
+            .insert(schema.ledgerTotals)
+            .values({ type: 'royalty_platform', total: platformCut })
+            .onConflictDoUpdate({
+              target: schema.ledgerTotals.type,
+              set: {
+                total: sql`${schema.ledgerTotals.total} + ${platformCut}`,
+              },
+            });
+        }
 
         return purchase;
       });
     } catch (error) {
-      // Delete the 'processing' sentinel so clients can retry after a failed transaction
+      // Delete the 'processing' sentinel so clients can retry after a failed transaction.
+      // This applies to ALL errors — including business-rule failures (insufficient funds,
+      // 403, 404) — because no data has been committed. Preserving the sentinel would
+      // block retries for 24 h on deterministic errors, which is the wrong behaviour.
       try {
         await this.redis.del(redisKey);
       } catch {
