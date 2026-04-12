@@ -4,7 +4,8 @@ CREATE TABLE "ledger_totals" (
 );
 --> statement-breakpoint
 ALTER TABLE "wallets" ADD COLUMN "fractional_balance" integer DEFAULT 0 NOT NULL;--> statement-breakpoint
-ALTER TABLE "wallets" ADD CONSTRAINT "wallets_fractional_balance_non_negative" CHECK ("wallets"."fractional_balance" >= 0);
+ALTER TABLE "wallets" ADD CONSTRAINT "wallets_fractional_balance_non_negative" CHECK ("wallets"."fractional_balance" >= 0);--> statement-breakpoint
+ALTER TABLE "wallets" ADD CONSTRAINT "wallets_fractional_balance_lt_100" CHECK ("wallets"."fractional_balance" < 100);
 
 -- Backfill running totals from existing ledger data
 INSERT INTO ledger_totals (type, total)

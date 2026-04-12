@@ -1,1 +1,0 @@
-ALTER TABLE "wallets" ADD CONSTRAINT "wallets_fractional_balance_lt_100" CHECK ("wallets"."fractional_balance" < 100);

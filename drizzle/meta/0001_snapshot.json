@@ -411,6 +411,10 @@
         "wallets_fractional_balance_non_negative": {
           "name": "wallets_fractional_balance_non_negative",
           "value": "\"wallets\".\"fractional_balance\" >= 0"
+        },
+        "wallets_fractional_balance_lt_100": {
+          "name": "wallets_fractional_balance_lt_100",
+          "value": "\"wallets\".\"fractional_balance\" < 100"
         }
       },
       "isRLSEnabled": false
