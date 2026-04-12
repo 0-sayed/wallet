@@ -778,4 +778,89 @@ describe('PurchasesService — Redis idempotency cache', () => {
     expect(secondCall[2]).toBe('EX');
     expect(secondCall[3]).toBe(86400);
   });
+
+  it('deletes owned sentinel when post-commit cache write fails', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // First set: NX sentinel → OK; second set: post-commit cache write → fails
+    mockRedis.set.mockResolvedValueOnce('OK');
+    mockRedis.set.mockRejectedValueOnce(new Error('Redis down'));
+    // DB idempotency check: no existing purchase
+    mockDb.where.mockResolvedValue([]);
+
+    const purchase = {
+      id: 'purchase-1',
+      idempotencyKey: 'key-1',
+      status: 'completed',
+      buyerWalletId: 'wallet-buyer',
+      authorWalletId: 'wallet-author',
+      itemPrice: 1000,
+      createdAt: new Date(),
+    };
+
+    mockTx.for.mockResolvedValue([
+      {
+        id: 'wallet-buyer',
+        userId: 'user-1',
+        balance: 5000,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'wallet-author',
+        userId: 'author-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+      {
+        id: 'platform-wallet-id',
+        userId: 'platform-user',
+        balance: 0,
+        fractionalBalance: 0,
+      },
+    ]);
+    mockTx.returning.mockResolvedValueOnce([purchase]);
+
+    const service = await createTestService(mockDb, mockRedis);
+    const result = await service.purchase(purchaseDto);
+
+    // Purchase still returned — commit succeeded
+    expect(result).toEqual(purchase);
+    // Sentinel must be deleted so retries fall through to DB rather than getting stale 409
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
+  });
+
+  it('deletes owned sentinel when DB cold-start cache write fails', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // First set: NX sentinel → OK; second set: cold-start cache write → fails
+    mockRedis.set.mockResolvedValueOnce('OK');
+    mockRedis.set.mockRejectedValueOnce(new Error('Redis down'));
+    // DB idempotency check: finds existing completed purchase
+    mockDb.where
+      .mockResolvedValueOnce([
+        {
+          id: 'purchase-1',
+          idempotencyKey: 'key-1',
+          status: 'completed',
+          buyerWalletId: 'wallet-buyer',
+          authorWalletId: 'wallet-author',
+          itemPrice: 1000,
+          createdAt: new Date(),
+        },
+      ])
+      // Ownership check: wallet belongs to the requesting user
+      .mockResolvedValueOnce([{ userId: 'user-1' }]);
+
+    const service = await createTestService(mockDb, mockRedis);
+    const existing = await service.purchase(purchaseDto);
+
+    // Result returned normally — DB path succeeded
+    expect(existing).toBeDefined();
+    // Sentinel must be deleted so retries fall through to DB rather than getting stale 409
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
+  });
 });

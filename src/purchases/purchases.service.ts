@@ -200,7 +200,15 @@ export class PurchasesService {
               IDEMPOTENCY_TTL,
             );
           } catch {
-            /* Redis unavailable — ignore */
+            // Cache write failed — delete our sentinel so retries fall through to DB
+            // rather than hitting a stale 'processing' key and getting a false 409
+            if (sentinelSet) {
+              try {
+                await this.redis.del(redisKey);
+              } catch {
+                /* ignore */
+              }
+            }
           }
           return existing;
         }
@@ -449,7 +457,15 @@ export class PurchasesService {
         IDEMPOTENCY_TTL,
       );
     } catch {
-      /* Redis unavailable — ignore */
+      // Cache write failed — delete our sentinel so retries fall through to DB
+      // rather than hitting a stale 'processing' key and getting a false 409
+      if (sentinelSet) {
+        try {
+          await this.redis.del(redisKey);
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
     return result;
