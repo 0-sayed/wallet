@@ -6,8 +6,6 @@
     "src/common/redis/redis.module.ts"
   ],
   "ignoreDependencies": [
-    "@nestjs/bullmq",
-    "bullmq",
     "@eslint/eslintrc",
     "pino-pretty",
     "source-map-support",

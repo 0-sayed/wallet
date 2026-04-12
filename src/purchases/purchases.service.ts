@@ -51,6 +51,11 @@ export class PurchasesService {
 
     const redisKey = `idempotency:${dto.idempotencyKey}`;
 
+    // Tracks whether THIS request set the 'processing' sentinel. Only the
+    // request that set it should delete it — prevents clobbering another
+    // request's sentinel or cached result.
+    let sentinelSet = false;
+
     // Redis SETNX edge-cache — short-circuit before hitting the DB
     try {
       const nx = await this.redis.set(
@@ -60,6 +65,7 @@ export class PurchasesService {
         IDEMPOTENCY_TTL,
         'NX',
       );
+      sentinelSet = nx === 'OK';
 
       if (nx === null) {
         // Key exists in Redis — cached result or in-flight
@@ -160,44 +166,57 @@ export class PurchasesService {
       .where(eq(schema.purchases.idempotencyKey, dto.idempotencyKey));
 
     if (existing) {
-      if (existing.status === 'completed') {
-        // Payload drift check — same key must have same intent
-        if (
-          existing.buyerWalletId !== dto.buyerWalletId ||
-          existing.authorWalletId !== dto.authorWalletId ||
-          existing.itemPrice !== dto.itemPrice
-        ) {
-          throw new ConflictException(
-            'Idempotency key already used with different purchase parameters',
-          );
+      // Wrap so any throw here cleans up the sentinel we set (if we set it).
+      // Without this, stale 'processing' sentinels block retries for 24 h.
+      try {
+        if (existing.status === 'completed') {
+          // Payload drift check — same key must have same intent
+          if (
+            existing.buyerWalletId !== dto.buyerWalletId ||
+            existing.authorWalletId !== dto.authorWalletId ||
+            existing.itemPrice !== dto.itemPrice
+          ) {
+            throw new ConflictException(
+              'Idempotency key already used with different purchase parameters',
+            );
+          }
+          // Ownership check — prevent unauthorized access to purchase records via
+          // replayed idempotency keys belonging to another user's transaction
+          const [buyerWallet] = await this.db
+            .select({ userId: schema.wallets.userId })
+            .from(schema.wallets)
+            .where(eq(schema.wallets.id, existing.buyerWalletId));
+          if (!buyerWallet || buyerWallet.userId !== dto.requestUserId) {
+            throw new ForbiddenException(
+              'Buyer wallet does not belong to the authenticated user',
+            );
+          }
+          // Populate Redis on DB cold-start hit
+          try {
+            await this.redis.set(
+              redisKey,
+              JSON.stringify(existing),
+              'EX',
+              IDEMPOTENCY_TTL,
+            );
+          } catch {
+            /* Redis unavailable — ignore */
+          }
+          return existing;
         }
-        // Ownership check — prevent unauthorized access to purchase records via
-        // replayed idempotency keys belonging to another user's transaction
-        const [buyerWallet] = await this.db
-          .select({ userId: schema.wallets.userId })
-          .from(schema.wallets)
-          .where(eq(schema.wallets.id, existing.buyerWalletId));
-        if (!buyerWallet || buyerWallet.userId !== dto.requestUserId) {
-          throw new ForbiddenException(
-            'Buyer wallet does not belong to the authenticated user',
-          );
+        throw new ConflictException(
+          'Purchase with this idempotency key is still in flight',
+        );
+      } catch (error) {
+        if (sentinelSet) {
+          try {
+            await this.redis.del(redisKey);
+          } catch {
+            /* Redis unavailable — ignore */
+          }
         }
-        // Populate Redis on DB cold-start hit
-        try {
-          await this.redis.set(
-            redisKey,
-            JSON.stringify(existing),
-            'EX',
-            IDEMPOTENCY_TTL,
-          );
-        } catch {
-          /* Redis unavailable — ignore */
-        }
-        return existing;
+        throw error;
       }
-      throw new ConflictException(
-        'Purchase with this idempotency key is still in flight',
-      );
     }
 
     let result: typeof schema.purchases.$inferSelect;
@@ -383,16 +402,6 @@ export class PurchasesService {
         return purchase;
       });
     } catch (error) {
-      // Delete the 'processing' sentinel so clients can retry after a failed transaction.
-      // This applies to ALL errors — including business-rule failures (insufficient funds,
-      // 403, 404) — because no data has been committed. Preserving the sentinel would
-      // block retries for 24 h on deterministic errors, which is the wrong behaviour.
-      try {
-        await this.redis.del(redisKey);
-      } catch {
-        /* Redis unavailable — ignore */
-      }
-
       // Drizzle may wrap the raw PostgresError in a DrizzleQueryError, so we
       // check both the error itself and its cause for the pg error code.
       const pgError =
@@ -401,6 +410,19 @@ export class PurchasesService {
           : error instanceof Error && error.cause instanceof PostgresError
             ? error.cause
             : null;
+
+      // Only delete the sentinel if this request set it AND the error is not a
+      // PG_UNIQUE_VIOLATION. On unique_violation a concurrent request won the race
+      // and may have already written the completed-purchase JSON to Redis — a blind
+      // DEL would clobber that cached result and force the next replay to hit the DB.
+      if (sentinelSet && pgError?.code !== PG_UNIQUE_VIOLATION) {
+        try {
+          await this.redis.del(redisKey);
+        } catch {
+          /* Redis unavailable — ignore */
+        }
+      }
+
       // 23505: unique_violation — concurrent duplicate idempotency key
       if (pgError?.code === PG_UNIQUE_VIOLATION) {
         throw new ConflictException(

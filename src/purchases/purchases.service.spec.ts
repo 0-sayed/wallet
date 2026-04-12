@@ -624,6 +624,84 @@ describe('PurchasesService — Redis idempotency cache', () => {
     );
   });
 
+  it('deletes owned sentinel when DB idempotency check throws ConflictException before transaction', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns 'OK' — this request set the sentinel
+    mockRedis.set.mockResolvedValue('OK');
+    // DB idempotency check: existing completed purchase with different payload → payload drift
+    mockDb.where.mockResolvedValueOnce([
+      {
+        id: 'purchase-1',
+        idempotencyKey: 'key-1',
+        status: 'completed',
+        buyerWalletId: 'wallet-buyer',
+        authorWalletId: 'wallet-author',
+        itemPrice: 999, // differs from purchaseDto.itemPrice (1000) → drift
+      },
+    ]);
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ConflictException,
+    );
+    // Sentinel must be cleaned up even though the throw happened before the transaction
+    expect(mockRedis.del).toHaveBeenCalledWith('idempotency:key-1');
+  });
+
+  it('does NOT delete sentinel when this request did not set it (NX=null, eviction race, DB conflict)', async () => {
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    const mockRedis = createMockRedis();
+
+    // NX returns null — another request's sentinel exists; eviction race: GET returns null
+    mockRedis.set.mockResolvedValue(null);
+    mockRedis.get.mockResolvedValue(null);
+    // DB idempotency check: finds pending purchase
+    mockDb.where.mockResolvedValueOnce([
+      { id: 'p-1', idempotencyKey: 'key-1', status: 'pending' },
+    ]);
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ConflictException,
+    );
+    // We did NOT set the sentinel — must not del it
+    expect(mockRedis.del).not.toHaveBeenCalled();
+  });
+
+  it('does NOT delete sentinel on PG_UNIQUE_VIOLATION (concurrent winner may have cached result)', async () => {
+    const pgError = Object.assign(new PostgresError('duplicate key'), {
+      code: '23505',
+      severity_local: 'ERROR',
+      severity: 'ERROR',
+    });
+    const drizzleQueryError = Object.assign(
+      new Error('Failed query: insert...'),
+      { cause: pgError },
+    );
+
+    const mockTx = createMockTx();
+    const mockDb = createMockDb(mockTx);
+    mockDb.where.mockResolvedValue([]); // no existing purchase
+    mockDb.transaction = jest.fn().mockRejectedValue(drizzleQueryError);
+
+    const mockRedis = createMockRedis();
+    mockRedis.set.mockResolvedValue('OK'); // this request set the sentinel
+
+    const service = await createTestService(mockDb, mockRedis);
+
+    await expect(service.purchase(purchaseDto)).rejects.toThrow(
+      ConflictException,
+    );
+    // The concurrent winner may have already set the cached result — do NOT del
+    expect(mockRedis.del).not.toHaveBeenCalled();
+  });
+
   it('clears the processing sentinel when the transaction fails', async () => {
     const mockTx = createMockTx();
     const mockDb = createMockDb(mockTx);

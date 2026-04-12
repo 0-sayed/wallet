@@ -64,6 +64,10 @@ export const wallets = pgTable(
       'wallets_fractional_balance_non_negative',
       sql`${table.fractionalBalance} >= 0`,
     ),
+    check(
+      'wallets_fractional_balance_lt_100',
+      sql`${table.fractionalBalance} < 100`,
+    ),
   ],
 );
 
