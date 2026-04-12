@@ -61,6 +61,12 @@ export class WalletsService {
         amount,
       });
 
+      // Update running total — same transaction, always consistent
+      await tx
+        .update(schema.ledgerTotals)
+        .set({ total: sql`${schema.ledgerTotals.total} + ${amount}` })
+        .where(eq(schema.ledgerTotals.type, 'deposit'));
+
       return updated;
     });
   }

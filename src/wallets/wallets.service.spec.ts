@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import { WalletsService } from './wallets.service';
 import { DB } from '../common/database/db.module';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import * as schema from '../common/database/schema';
 
 const mockWallet = {
   id: 'wallet-1',
@@ -87,6 +88,23 @@ describe('WalletsService', () => {
       const result = await service.deposit('user-1', 'wallet-1', 100);
       expect(result.balance).toBe(5100);
       expect(tx.insert).toHaveBeenCalled();
+    });
+
+    it('updates ledger_totals for deposit within the same transaction', async () => {
+      const updatedWallet = { ...mockWallet, balance: 5100 };
+      const tx = makeTx({
+        selectResult: [mockWallet],
+        updateResult: [updatedWallet],
+      });
+      mockDb.transaction.mockImplementation((cb: (tx: MockTx) => unknown) =>
+        cb(tx),
+      );
+
+      await service.deposit('user-1', 'wallet-1', 100);
+
+      // First update: wallet balance. Second update: ledger_totals.
+      expect(tx.update).toHaveBeenCalledTimes(2);
+      expect(tx.update).toHaveBeenNthCalledWith(2, schema.ledgerTotals);
     });
   });
 });
